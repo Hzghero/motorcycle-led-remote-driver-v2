@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.8.3-DeviceId-Flash"
+#define FW_VERSION "v2.10.5-PhaseLock-TIM14"
 
 /* USER CODE END EC */
 
@@ -60,8 +60,12 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define KEY_IN_Pin GPIO_PIN_7
-#define KEY_IN_GPIO_Port GPIOB
+#define L_KEY_Pin GPIO_PIN_7
+#define L_KEY_GPIO_Port GPIOB
+#define M_KEY_Pin GPIO_PIN_0
+#define M_KEY_GPIO_Port GPIOA
+#define R_KEY_Pin GPIO_PIN_1
+#define R_KEY_GPIO_Port GPIOA
 #define LED_DRV_Pin GPIO_PIN_2
 #define LED_DRV_GPIO_Port GPIOA
 #define LED_DRV2_Pin_Pin GPIO_PIN_3
