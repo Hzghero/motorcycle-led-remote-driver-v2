@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.5-PhaseLock-TIM14"
+#define FW_VERSION "v2.10.7-TxKeyDouble200-RfChGuard"
 
 /* USER CODE END EC */
 
@@ -66,20 +66,22 @@ void Error_Handler(void);
 #define M_KEY_GPIO_Port GPIOA
 #define R_KEY_Pin GPIO_PIN_1
 #define R_KEY_GPIO_Port GPIOA
-#define LED_DRV_Pin GPIO_PIN_2
-#define LED_DRV_GPIO_Port GPIOA
-#define LED_DRV2_Pin_Pin GPIO_PIN_3
-#define LED_DRV2_Pin_GPIO_Port GPIOA
+#define PWM_GLOBAL_Pin GPIO_PIN_2
+#define PWM_GLOBAL_GPIO_Port GPIOA
+#define MOS_L_HI_Pin GPIO_PIN_3
+#define MOS_L_HI_GPIO_Port GPIOA
 #define RF_CSN_Pin GPIO_PIN_4
 #define RF_CSN_GPIO_Port GPIOA
 #define RF_SCK_Pin GPIO_PIN_5
 #define RF_SCK_GPIO_Port GPIOA
-#define DIV_MOS_Pin GPIO_PIN_6
-#define DIV_MOS_GPIO_Port GPIOA
+#define MOS_L_LO_Pin GPIO_PIN_6
+#define MOS_L_LO_GPIO_Port GPIOA
 #define RF_DATA_Pin GPIO_PIN_7
 #define RF_DATA_GPIO_Port GPIOA
-#define CHG_MOS_Pin GPIO_PIN_8
-#define CHG_MOS_GPIO_Port GPIOA
+#define MOS_R_HI_Pin GPIO_PIN_8
+#define MOS_R_HI_GPIO_Port GPIOA
+#define MOS_R_LO_Pin GPIO_PIN_10
+#define MOS_R_LO_GPIO_Port GPIOA
 #define LED_Pin GPIO_PIN_6
 #define LED_GPIO_Port GPIOB
 

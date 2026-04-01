@@ -4,6 +4,8 @@
 
 | 版本号 | 日期 | 修改要点 | 关联文件 |
 | --- | --- | --- | --- |
+| v2.10.7-TxKeyDouble200-RfChGuard | 2026-04-01 | TX 三键恢复双击识别并将双击窗口收敛到 200ms（与功能说明书一致），三键双击均接入熄灯触发链路；同时新增 RF 频道强约束说明，明确 TX=76/RX=75 必须错开，避免同频道导致收包异常。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/KEY_APP_MANUAL.md`、`CHANGELOG_INDEX.md` |
+| v2.10.6-GlobalPwmMos-IORefactor | 2026-04-01 | 完成双灯头控制重构：PA2 统一为 PWM_GLOBAL，PA3/PA6/PA8/PA10 作为四路 MOS 通道；RX 灯效改为“全局 PWM + 通道位图”；新增 PWM 强制高/低电平调试开关。台架实测：4 路 MOS 与 PWM 均符合预期。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/01-功能说明书.md`、`docs/04-双灯头全局PWM与MOS硬开关功能说明_v1.0_2026-04-01.md`、`docs/06-台架测试记录模板_双灯头全局PWM与MOS_v2.10.6.md`、`docs/05-会话历史摘要_2026-03-28.md` |
 | v2.9.9-TX-BootWarm-Burst | 2026-03-29 | TX 发包与按键策略收敛：按键事件短突发发送、上电保温窗口+首包增强、空闲RF睡眠；按键先收敛单击+长按，双击暂缓。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/05-会话历史摘要_2026-03-28.md` |
 | v2.9.5-Doc-KeysOff-PwmSpec | 2026-03-28 | 仅文档修订：补充“熄灯后单击右键直入特效1”、特效快闪=2Hz，明确20kHz PWM/恒高规则；清单同步更新待实现项。 | `docs/01-功能说明书.md`、`docs/04-对齐功能说明书_执行清单_2026-03-28.md`、`CHANGELOG_INDEX.md` |
 | v2.9.1-Checklist-AlignSpec | 2026-03-28 | 新增《对齐功能说明书执行清单》：用于后续逐项勾选完成并避免遗漏；索引总表新增快捷入口。 | `docs/04-对齐功能说明书_执行清单_2026-03-28.md`、`CHANGELOG_INDEX.md` |
@@ -26,4 +28,7 @@
 | `XL2400T`（接收端） | `RF_SCK` | `PA5` |
 | `XL2400T`（接收端） | `RF_DATA` | `PA7` |
 
-> 补充：`PA3` 已从原 `BOOST_EN` 改为 `TIM1_CH4`（`LED_DRV2_Pin`）作为第 2 路 PWM 输出。
+> 2026-04-01 补充（双灯头全局PWM + MOS 架构）：
+> `PA2` = `PWM_GLOBAL`（TIM1_CH3，全局亮度/模拟调光）；
+> `PA3` = `MOS_L_HI`；`PA6` = `MOS_L_LO`；`PA8` = `MOS_R_HI`；
+> `PA10` = `MOS_R_LO`；`PB6` = `LED`（状态指示）。

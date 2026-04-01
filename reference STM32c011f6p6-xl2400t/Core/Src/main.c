@@ -32,7 +32,7 @@
 /* 中文注释：
    - XL2400T.h 与 rf_xl2400.h 提供 2.4GHz RF 模块初始化、发送、接收接口
    - 采用 900ms 周期同步协议：0-450ms 发送同步包，450-900ms 接收同步包
-   - LED 指示：PB6 (LED_Pin) 同步事件指示 + PA2 (LED_DRV_Pin) PWM 驱动
+   - LED 指示：PB6 (LED_Pin) 同步事件指示 + PA2 (PWM_GLOBAL) 全局 PWM 驱动
 */
 /* USER CODE END Includes */
 
@@ -48,6 +48,10 @@
 #define SYNC_TX_TIME_MS     450U    /* TX 发送时间：所有节点固定 450ms */
 #define SYNC_TX_DELAY_MS    6U      /* 传输延迟补偿 */
 #define SYNC_PKT_SIZE       4U      /* AA 55 + 2字节相位 */
+/*
+ * RF 频道强约束：TX=76 / RX=75 必须错开一档，严禁改成同频道。
+ * 已验证：改为相同频道会导致接收端无法稳定收到数据。
+ */
 #define RF_TX_CHANNEL       76U     /* XL2400T TX 频道 76 (2476 MHz) */
 #define RF_RX_CHANNEL       75U     /* XL2400T RX 频道 75 (2475 MHz) - 相邻频道避免自干扰 */
 
@@ -57,8 +61,8 @@
  * 你需要把角色宏切成不同编译即可得到 TX/RX 两个程序。
  */
 #define APP_RF_LINK_TEST  1
-#define APP_ROLE_RX_ONLY  1
-#define APP_ROLE_TX_ONLY  0
+#define APP_ROLE_RX_ONLY  0
+#define APP_ROLE_TX_ONLY  1
 
 /* 仅允许启用一个角色 */
 #if (APP_ROLE_RX_ONLY + APP_ROLE_TX_ONLY) != 1
@@ -141,9 +145,15 @@
 #define DEBUG_LED_VERBOSE  1   /* 调试：1=打印LED状态，0=不打印 */
 #define DEBUG_PERIODIC     0   /* 调试：1=启用定期打印（影响功耗），0=禁用 */
 #define UART_LOG_ENABLE    1   /* 串口日志总开关：1=开启打印，0=关闭打印（先用于排查波形） */
-#define RX_LOCAL_EFFECT_TEST  1U  /* RX本地灯效测试：1=忽略RF命令并按本地脚本切模式 */
+#define RX_LOCAL_EFFECT_TEST  0U  /* RX本地灯效测试：1=忽略RF命令并按本地脚本切模式 */
 #define RX_LOCAL_STEP_MS      8000U /* 本地测试每个模式驻留时间 */
 #define RX_LOCAL_TEST_BRIGHT  TLIGHT_BRIGHT_70 /* 本地测试亮度：70% 便于观察PWM相位锁定 */
+
+/* PWM_GLOBAL 强制电平测试开关：
+ * 0 = 按正常模式输出 PWM 占空比
+ * 1 = 强制低电平（0%）
+ * 2 = 强制高电平（100%） */
+#define PWM_GLOBAL_FORCE_LEVEL  0U
 
 /* 按键对码（L=PB7, R=PA1，内部下拉，按下为高） */
 #define KEY_ACTIVE_LEVEL        GPIO_PIN_SET
@@ -152,9 +162,9 @@
 
 /* TX 三键熄灯/点亮规则（v0.3.3） */
 #define KEY_TX_LONG_MS          1000U
-#define KEY_TX_DBL_MS           700U
+#define KEY_TX_DBL_MS           200U
 #define KEY_TX_TAP_MAX_MS       320U
-#define KEY_TX_DOUBLE_ENABLE    0U
+#define KEY_TX_DOUBLE_ENABLE    1U
 #define TX_KEY_LED_ON_MS        180U
 
 /* TX 右键本地调试（积木化排查）
@@ -256,6 +266,7 @@ typedef struct {
   uint8_t  long_reported;
   uint8_t  click_pending;
   uint32_t first_click_tick;
+  uint8_t  suppress_release_after_double;
 } TxKeyState_t;
 
 static TxKeyState_t g_txk_l = {0};
@@ -316,8 +327,8 @@ static uint8_t  g_night_debug_window = 0;   /* 是否在调试窗口内（夜间
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
-static void MX_USART1_UART_Init(void);
 static void MX_TIM14_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void DebugPrint(const char *s);
 static void DebugPrintHex(const uint8_t *buf, uint8_t len);
@@ -340,6 +351,8 @@ static void LinkStats_Log(uint32_t now);
 static void Sync_AdjustFromPacket(uint16_t rx_phase_ms);
 static void Sync_MainLoop(void);
 static void Light_Tick(uint32_t now);
+static void PwmGlobal_Set(uint16_t pulse);
+static void Channel_ApplyMask(uint8_t mask);
 static void PairingLed_Update(uint32_t now);
 static void PairingLed_Feedback(uint8_t success);
 static void TxKeys_Process(uint32_t now);
@@ -656,8 +669,8 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM1_Init();
-  MX_USART1_UART_Init();
   MX_TIM14_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim14);
   DevId_LoadFromFlash();
@@ -676,19 +689,17 @@ int main(void)
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 #endif
 
-  /* 原 PA3=BOOST_EN 已改为 PWM2（TIM1_CH4 / LED_DRV2_Pin），不再控制升压使能 */
+  /* PA3 已切换为 MOS_L_HI（GPIO 输出），不再作为 PWM 通道 */
   HAL_Delay(100);
 
-  /* 两路 PWM 启动（PA2=TIM1_CH3, PA3=TIM1_CH4） */
+  /* 单路全局 PWM 启动（PA2=TIM1_CH3） */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
 
-  /* 使能CCR预装载：比较值在更新事件统一生效，减少交替模式边沿毛刺 */
+  /* 使能 CCR 预装载：比较值在更新事件统一生效 */
   __HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_3);
-  __HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_4);
 
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
+  Channel_ApplyMask(0U);
 
 
 
@@ -1142,12 +1153,6 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
   sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
@@ -1190,7 +1195,7 @@ static void MX_TIM14_Init(void)
 
   /* USER CODE END TIM14_Init 1 */
   htim14.Instance = TIM14;
-  htim14.Init.Prescaler = 23;
+  htim14.Init.Prescaler = 47;
   htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim14.Init.Period = 999;
   htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1237,13 +1242,13 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.Mode = UART_MODE_TX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
   huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
   huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
+  if (HAL_HalfDuplex_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1283,8 +1288,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, RF_CSN_Pin|RF_SCK_Pin|DIV_MOS_Pin|RF_DATA_Pin
-                          |CHG_MOS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, MOS_L_HI_Pin|RF_CSN_Pin|RF_SCK_Pin|MOS_L_LO_Pin
+                          |RF_DATA_Pin|MOS_R_HI_Pin|MOS_R_LO_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
@@ -1301,10 +1306,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RF_CSN_Pin RF_SCK_Pin DIV_MOS_Pin RF_DATA_Pin
-                           CHG_MOS_Pin */
-  GPIO_InitStruct.Pin = RF_CSN_Pin|RF_SCK_Pin|DIV_MOS_Pin|RF_DATA_Pin
-                          |CHG_MOS_Pin;
+  /*Configure GPIO pins : MOS_L_HI_Pin MOS_L_LO_Pin MOS_R_HI_Pin MOS_R_LO_Pin */
+  GPIO_InitStruct.Pin = MOS_L_HI_Pin|MOS_L_LO_Pin|MOS_R_HI_Pin|MOS_R_LO_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : RF_CSN_Pin RF_SCK_Pin RF_DATA_Pin */
+  GPIO_InitStruct.Pin = RF_CSN_Pin|RF_SCK_Pin|RF_DATA_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1345,13 +1355,39 @@ static uint16_t Bright_ToPulse(uint8_t bright)
   return (uint16_t)((arrp1 * pct) / 100U);
 }
 
-static void Pwm_Set(uint16_t ch3_pulse, uint16_t ch4_pulse)
+/* 四路灯通道位图定义（仅用于 MOS 导通选择） */
+#define CH_L_HI_MASK  (1U << 0)
+#define CH_L_LO_MASK  (1U << 1)
+#define CH_R_HI_MASK  (1U << 2)
+#define CH_R_LO_MASK  (1U << 3)
+
+/* 设置全局亮度 PWM（PA2/TIM1_CH3）：
+ * - 正常模式：按 pulse 输出占空比
+ * - 调试模式：可强制 0% 或 100% 验证 MOS 通道逻辑 */
+static void PwmGlobal_Set(uint16_t pulse)
 {
   uint16_t arrp1 = Pwm_GetArrPlus1();
-  if (ch3_pulse > arrp1) ch3_pulse = arrp1;
-  if (ch4_pulse > arrp1) ch4_pulse = arrp1;
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, ch3_pulse);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ch4_pulse);
+  if (pulse > arrp1) pulse = arrp1;
+
+#if (PWM_GLOBAL_FORCE_LEVEL == 1U)
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0U);
+#elif (PWM_GLOBAL_FORCE_LEVEL == 2U)
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, arrp1);
+#else
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, pulse);
+#endif
+}
+
+/* 应用四路 MOS 通道掩码：
+ * - 1 表示导通该通道
+ * - 0 表示关断该通道
+ * 说明：MOS 仅用于通道选择，不做亮度调制。 */
+static void Channel_ApplyMask(uint8_t mask)
+{
+  HAL_GPIO_WritePin(MOS_L_HI_GPIO_Port, MOS_L_HI_Pin, (mask & CH_L_HI_MASK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(MOS_L_LO_GPIO_Port, MOS_L_LO_Pin, (mask & CH_L_LO_MASK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(MOS_R_HI_GPIO_Port, MOS_R_HI_Pin, (mask & CH_R_HI_MASK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(MOS_R_LO_GPIO_Port, MOS_R_LO_Pin, (mask & CH_R_LO_MASK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 static void PairingLed_Update(uint32_t now)
@@ -1415,19 +1451,45 @@ static uint8_t TxKey_Update(TxKeyState_t *ks, uint8_t raw, uint32_t now, uint8_t
       changed = 1U;
 
       if (ks->stable_level != 0U) {
-        /* 按下：记录开始时间，长按可在按住达到阈值立即触发 */
+        /* 稳定按下 */
         ks->press_start_tick = now;
         ks->long_reported = 0U;
+
+#if KEY_TX_DOUBLE_ENABLE
+        if (ks->click_pending != 0U) {
+          uint32_t gap = now - ks->first_click_tick;
+          if (gap <= KEY_TX_DBL_MS) {
+            *evt_double = 1U;
+            ks->click_pending = 0U;
+            ks->suppress_release_after_double = 1U;
+          } else {
+            /* 第二次按下已超窗：上一击补发 single，本次按下作为新一轮 */
+            *evt_single = 1U;
+            ks->click_pending = 0U;
+          }
+        }
+#endif
       } else {
+        /* 稳定松开 */
         uint32_t press_dur = 0U;
         if (ks->press_start_tick != 0U) {
           press_dur = now - ks->press_start_tick;
         }
         ks->last_press_duration_ms = press_dur;
 
-        /* 释放即短按：只要未触发长按就算单击 */
+        if (ks->suppress_release_after_double != 0U) {
+          ks->suppress_release_after_double = 0U;
+          ks->press_start_tick = 0U;
+          return changed;
+        }
+
         if (ks->long_reported == 0U) {
+#if KEY_TX_DOUBLE_ENABLE
+          ks->click_pending = 1U;
+          ks->first_click_tick = now;
+#else
           *evt_single = 1U;
+#endif
         }
 
         ks->press_start_tick = 0U;
@@ -1438,11 +1500,19 @@ static uint8_t TxKey_Update(TxKeyState_t *ks, uint8_t raw, uint32_t now, uint8_t
   if ((ks->stable_level != 0U) && (ks->long_reported == 0U) && (ks->press_start_tick != 0U)) {
     if ((now - ks->press_start_tick) >= KEY_TX_LONG_MS) {
       ks->long_reported = 1U;
+      ks->click_pending = 0U;
+      ks->suppress_release_after_double = 0U;
       *evt_long = 1U;
     }
   }
 
-  (void)evt_double;
+#if KEY_TX_DOUBLE_ENABLE
+  if ((ks->click_pending != 0U) && ((now - ks->first_click_tick) > KEY_TX_DBL_MS)) {
+    ks->click_pending = 0U;
+    *evt_single = 1U;
+  }
+#endif
+
   return changed;
 }
 
@@ -1591,8 +1661,11 @@ static void TxKeys_Process(uint32_t now)
     DebugPrint("ms\r\n");
   }
   if (d) {
-    /* 当前阶段关闭双击业务：调试模式下仅记录忽略 */
-    DebugPrint("[RDBG] double ignored\r\n");
+    g_rdbg_evt_double = 1U;
+    g_rdbg_double_cnt++;
+    DebugPrint("[RDBG] double cnt=");
+    DebugPrintDec((uint16_t)(g_rdbg_double_cnt & 0xFFFFU));
+    DebugPrint("\r\n");
   }
   if (l) {
     g_rdbg_evt_long = 1U;
@@ -1605,18 +1678,18 @@ static void TxKeys_Process(uint32_t now)
   }
 #else
   (void)TxKey_Update(&g_txk_l, TxKey_ReadRaw(L_KEY_Pin, L_KEY_GPIO_Port), now, &s, &d, &l);
-  (void)d;
   if (s) { g_tx_evt_l = 1U; }
+  if (d) { Tx_HandleOffTrigger(0U, "double"); changed = 1U; }
   if (l) { Tx_HandleOffTrigger(0U, "long"); changed = 1U; }
 
   (void)TxKey_Update(&g_txk_m, TxKey_ReadRaw(M_KEY_Pin, M_KEY_GPIO_Port), now, &s, &d, &l);
-  (void)d;
   if (s) { g_tx_evt_m = 1U; }
+  if (d) { Tx_HandleOffTrigger(1U, "double"); changed = 1U; }
   if (l) { Tx_HandleOffTrigger(1U, "long"); changed = 1U; }
 
   (void)TxKey_Update(&g_txk_r, TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port), now, &s, &d, &l);
-  (void)d;
   if (s) { g_tx_evt_r = 1U; }
+  if (d) { Tx_HandleOffTrigger(2U, "double"); changed = 1U; }
   if (l) { Tx_HandleOffTrigger(2U, "long"); changed = 1U; }
 
   if (g_tx_evt_l != 0U) {
@@ -1758,48 +1831,52 @@ static void Light_Tick(uint32_t now)
 
   /* 对齐说明书参数：
    * mode4: 250ms亮+250ms灭（2Hz）
-   * mode5: 远近各500ms交替
+   * mode5: A/B 交替（左远+右近 / 右远+左近）
    * mode6: 2s呼吸周期
-   * mode7: 远光250ms轮闪（仅CH3） */
-  const uint16_t fast_ms = 250U;   /* mode4 */
-  const uint16_t alt_ms  = 500U;   /* mode5 */
-  const uint16_t wheel_ms = 250U;  /* mode7 */
+   * mode7: 左右远光轮闪 */
+  const uint16_t fast_ms = 250U;    /* mode4 */
+  const uint16_t alt_ms  = 500U;    /* mode5 */
+  const uint16_t wheel_ms = 250U;   /* mode7 */
   const uint16_t breath_ms = 2000U; /* mode6 */
+
+  uint8_t mask = 0U;
+  uint16_t pulse = 0U;
 
   (void)now;
 
   switch (g_light_mode) {
-    case 1: /* 近光：CH4 */
-      Pwm_Set(0U, base);
+    case 1: /* 近光常亮 */
+      mask = (uint8_t)(CH_L_LO_MASK | CH_R_LO_MASK);
+      pulse = base;
       break;
 
-    case 2: /* 远光：CH3 */
-      Pwm_Set(base, 0U);
+    case 2: /* 远光常亮 */
+      mask = (uint8_t)(CH_L_HI_MASK | CH_R_HI_MASK);
+      pulse = base;
       break;
 
     case 3: /* 远近同亮 */
-      Pwm_Set(base, base);
+      mask = (uint8_t)(CH_L_HI_MASK | CH_L_LO_MASK | CH_R_HI_MASK | CH_R_LO_MASK);
+      pulse = base;
       break;
 
-    case 4: /* 远光同步快闪：相位锁定 */
+    case 4: /* 远光同步快闪 */
     {
       uint16_t phase = GetPhase1ms((uint16_t)(fast_ms * 2U));
-      Pwm_Set((phase < fast_ms) ? base : 0U, 0U);
+      mask = (uint8_t)(CH_L_HI_MASK | CH_R_HI_MASK);
+      pulse = (phase < fast_ms) ? base : 0U;
       break;
     }
 
-    case 5: /* 远近交替闪：相位锁定 + 1ms死区避免跨通道重叠毛刺 */
+    case 5: /* 远近交替闪：A=左远+右近，B=右远+左近 */
     {
       uint16_t phase = GetPhase1ms((uint16_t)(alt_ms * 2U));
-      if (phase < (alt_ms - 1U)) {
-        Pwm_Set(base, 0U);
-      } else if (phase < alt_ms) {
-        Pwm_Set(0U, 0U);
-      } else if (phase < ((uint16_t)(alt_ms * 2U) - 1U)) {
-        Pwm_Set(0U, base);
+      if (phase < alt_ms) {
+        mask = (uint8_t)(CH_L_HI_MASK | CH_R_LO_MASK);
       } else {
-        Pwm_Set(0U, 0U);
+        mask = (uint8_t)(CH_R_HI_MASK | CH_L_LO_MASK);
       }
+      pulse = base;
       break;
     }
 
@@ -1808,22 +1885,31 @@ static void Light_Tick(uint32_t now)
       uint16_t phase = GetPhase1ms(breath_ms);
       uint16_t half = (uint16_t)(breath_ms / 2U);
       uint16_t tri = (phase < half) ? phase : (uint16_t)(breath_ms - phase);
-      uint16_t pulse = (uint16_t)(((uint32_t)base * (uint32_t)tri) / (uint32_t)half);
-      Pwm_Set(0U, pulse);
+      mask = (uint8_t)(CH_L_LO_MASK | CH_R_LO_MASK);
+      pulse = (uint16_t)(((uint32_t)base * (uint32_t)tri) / (uint32_t)half);
       break;
     }
 
-    case 7: /* 远光轮闪（仅CH3）：相位锁定 */
+    case 7: /* 远光左右轮闪 */
     {
       uint16_t phase = GetPhase1ms((uint16_t)(wheel_ms * 2U));
-      Pwm_Set((phase < wheel_ms) ? base : 0U, 0U);
+      if (phase < wheel_ms) {
+        mask = CH_L_HI_MASK;
+      } else {
+        mask = CH_R_HI_MASK;
+      }
+      pulse = base;
       break;
     }
 
     default:
-      Pwm_Set(0U, 0U);
+      mask = 0U;
+      pulse = 0U;
       break;
   }
+
+  Channel_ApplyMask(mask);
+  PwmGlobal_Set(pulse);
 }
 
 static void DebugPrint(const char *s)
@@ -1897,7 +1983,7 @@ static void SyncTime_Update(void)
 
 /**
  * @brief  同步闪灯：时间戳保证至少亮 100ms 后熄灭，积木4/5
- *         LED_DRV(PA2) 用 TIM1_CH3 PWM，PB6 状态指示
+ *         PWM_GLOBAL(PA2) 用 TIM1_CH3 PWM，PB6 状态指示
  */
 static void SyncLamp_Update(void)
 {
