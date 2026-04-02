@@ -290,7 +290,22 @@ unsigned char RF_TX_Data(unsigned char* tx_buff)
   RF_CE_High();
   RF_DelayUs(100);
   RF_CE_Low();
-  RF_DelayMs(100);
+
+#if RF_TX_USE_FIXED_DELAY_MODE
+  /* 兼容旧逻辑：固定等待，简单但会阻塞主循环 */
+  RF_DelayMs((unsigned char)RF_TX_POST_CE_FIXED_DELAY_MS);
+#else
+  /* 快速模式：轮询 TX_DS/MAX_RT，减少阻塞时间 */
+  {
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < RF_TX_STATUS_WAIT_TIMEOUT_MS) {
+      unsigned char st = RF_SPI_Read_Reg(R_REGISTER + RF_STATUS);
+      if (st & (TX_DS | MAX_RT)) {
+        break;
+      }
+    }
+  }
+#endif
 
   if (RF_SPI_Read_Reg(R_REGISTER + RF_STATUS) & TX_DS) {
     RF_Refresh_State();

@@ -43,26 +43,37 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SYNC_CYCLE_MS       900U    /* 同步周期 900ms */
-#define SYNC_LED_ON_MS      100U    /* LED 亮灯时间 100ms */
-#define SYNC_TX_TIME_MS     450U    /* TX 发送时间：所有节点固定 450ms */
-#define SYNC_TX_DELAY_MS    6U      /* 传输延迟补偿 */
-#define SYNC_PKT_SIZE       4U      /* AA 55 + 2字节相位 */
-/*
- * RF 频道强约束：TX=76 / RX=75 必须错开一档，严禁改成同频道。
- * 已验证：改为相同频道会导致接收端无法稳定收到数据。
- */
-#define RF_TX_CHANNEL       76U     /* XL2400T TX 频道 76 (2476 MHz) */
-#define RF_RX_CHANNEL       75U     /* XL2400T RX 频道 75 (2475 MHz) - 相邻频道避免自干扰 */
 
-/* RF 链路测试模式（先简后繁）：
- * - RX-only：循环 PollReceive，收到后打印/点亮 LED
- * - TX-only：循环周期性 Send 同步包（AA55 + 相位）
- * 你需要把角色宏切成不同编译即可得到 TX/RX 两个程序。
- */
-#define APP_RF_LINK_TEST  1
-#define APP_ROLE_RX_ONLY  0
-#define APP_ROLE_TX_ONLY  1
+/* ============================ 宏配置总区（集中管理） ============================
+ * 说明：
+ * 1) 先看“角色与构建模式”决定当前固件身份（TX/RX + 是否链路测试）；
+ * 2) 再看“低功耗与调试”决定运行策略；
+ * 3) 其余为协议与时序参数。 */
+
+/* [A] 角色与构建模式（最关键）
+ * - 正常发射端固件：APP_RF_LINK_TEST=0, APP_ROLE_TX_ONLY=1, APP_ROLE_RX_ONLY=0
+ * - 正常接收端固件：APP_RF_LINK_TEST=0, APP_ROLE_TX_ONLY=0, APP_ROLE_RX_ONLY=1 */
+#define APP_RF_LINK_TEST            1U  /* 1=开启链路诊断附加打印，0=关闭附加打印（不影响业务主流程） */
+#define APP_ROLE_RX_ONLY            1U  /* 1=接收端固件 */
+#define APP_ROLE_TX_ONLY            0U  /* 1=发射端固件 */
+
+/* [B] 低功耗与诊断 */
+#define TX_LOWPOWER_MODE_SLEEP      0U
+#define TX_LOWPOWER_MODE_STOP       1U
+#define TX_LOWPOWER_MODE            TX_LOWPOWER_MODE_STOP /* TX低功耗模式：SLEEP/STOP */
+#define LOWPOWER_DIAG_ENABLE        1U  /* 1=低功耗诊断打印，0=关闭诊断打印 */
+
+/* [C] RF 基本参数
+ * RF 频道强约束：TX=76 / RX=75 必须错开一档，严禁同频道。 */
+#define RF_TX_CHANNEL               76U /* XL2400T TX 频道 76 (2476 MHz) */
+#define RF_RX_CHANNEL               75U /* XL2400T RX 频道 75 (2475 MHz) */
+
+/* [D] 同步/时序协议参数 */
+#define SYNC_CYCLE_MS               900U    /* 同步周期 900ms */
+#define SYNC_LED_ON_MS              100U    /* LED 亮灯时间 100ms */
+#define SYNC_TX_TIME_MS             450U    /* TX 发送时间：所有节点固定 450ms */
+#define SYNC_TX_DELAY_MS            6U      /* 传输延迟补偿 */
+#define SYNC_PKT_SIZE               4U      /* AA 55 + 2字节相位 */
 
 /* 仅允许启用一个角色 */
 #if (APP_ROLE_RX_ONLY + APP_ROLE_TX_ONLY) != 1
@@ -126,6 +137,10 @@
 #define LINK_RX_TIMEOUT_MS           1200U  /* 超过 1.2s 未收到有效包，判定链路超时 */
 #define LINK_STATS_LOG_INTERVAL_MS   3000U  /* 每 3s 打印一次统计，避免刷屏 */
 #define UART_CMD_BUF_SIZE            48U
+#define UART_CMD_POLL_MAX_BYTES      8U   /* 每轮主循环最多处理字节数，防止串口命令饿死按键扫描 */
+#define UART_CMD_ECHO_ENABLE         0U   /* 1=回显输入字符；0=不回显（降低阻塞） */
+
+/* TX 低功耗策略已在“宏配置总区 [B]”集中定义 */
 
 /* TX 发包策略：按键事件触发短突发；对码窗口内才周期发 */
 #define LINK_TX_EVENT_BURST_COUNT    4U
@@ -135,10 +150,25 @@
 #define RF_TX_BOOT_WARM_MS           1500U
 #define LINK_TX_BOOT_BURST_COUNT     6U
 
+/* TX 低功耗抗漏按参数（方向A）：
+ * - 唤醒保护窗口：唤醒后至少保持一段时间不回睡，给按键去抖/识别留时间
+ * - 按键活动保持：检测到任一按键按下后，再保持一段时间活跃，避免短按被切碎 */
+#define TX_LP_WAKE_GUARD_MS          1000U /* 唤醒后至少保持1s活跃，避免首个长按被切碎 */
+#define TX_LP_KEY_ACTIVE_HOLD_MS     1400U /* 检测到按键活动后继续保持活跃时间 */
+
 /* 简化可见指示（用 LED_Pin，不做真实 LM3409 PWM 还原） */
 #define LED_FLASH_PERIOD_MS  250U   /* 闪烁周期 */
 #define LED_BREATH_PERIOD_MS 800U   /* 呼吸周期（简化为慢速占空） */
 
+/* RX 模式 4~7 灯效可调参数（统一放宏，便于快速调效果）
+ * 说明：
+ * - 频率(Hz) ≈ 1000 / (2 * 半周期ms)
+ * - 呼吸总周期(ms) = 从暗到亮再到暗的完整时间
+ */
+#define FX4_FLASH_HALF_PERIOD_MS     100U   /* 模式4：双远光同步闪 半周期，默认 2Hz */
+#define FX5_ALT_HALF_PERIOD_MS       200U   /* 模式5：左右交替闪 半周期，默认 1Hz 交替 */
+#define FX6_BREATH_PERIOD_MS        4000U   /* 模式6：呼吸灯总周期，默认 2s */
+#define FX7_WHEEL_HALF_PERIOD_MS     100U   /* 模式7：左右轮闪 半周期，默认 2Hz 轮闪 */
 
 #define DEBUG_ADC_VERBOSE  0   /* 调试：1=打印 ADC 采样值，完成后可改为 0 精简 */
 #define DEBUG_SYNC_VERBOSE 1   /* 调试：1=打印详细同步信息，0=只打印关键事件 */
@@ -201,15 +231,12 @@ static uint8_t  g_rf_mode = 0;
 static uint8_t  g_led_state = 0;
 static uint32_t g_led_on_tick = 0;
 
-static uint8_t  g_is_night = 1;
-static uint32_t g_last_daynight_tick = 0;
-static uint32_t g_daynight_hold_until_tick = 0;
-
-static uint32_t g_last_charge_tick = 0;
-
 static uint8_t  g_rf_sleeping = 0;
-static uint8_t  g_rf_sleeping_night = 0;
 static uint32_t g_adc_display_tick = 0;  /* ADC显示计时器 */
+static uint32_t g_lp_enter_cnt = 0U;     /* 低功耗进入计数（诊断） */
+static uint32_t g_lp_wake_cnt = 0U;      /* 低功耗唤醒计数（诊断） */
+static uint32_t g_tx_lp_wake_tick = 0U;  /* TX 低功耗唤醒时刻，用于唤醒保护窗口 */
+static uint32_t g_tx_key_active_until_tick = 0U; /* TX 按键活动保持截止时刻 */
 
 /* 链路调试统计（用于串口观测通信质量） */
 static uint8_t  g_link_tx_seq = 0;
@@ -250,6 +277,16 @@ static uint32_t g_pair_press_start_tick = 0;
 static uint8_t  g_pairing_mode = 0U;
 static uint32_t g_pairing_enter_tick = 0U;
 static uint32_t g_pair_led_tick = 0U;
+
+typedef enum {
+  PAIR_FB_NONE = 0,
+  PAIR_FB_SUCCESS,
+  PAIR_FB_FAIL
+} PairFeedbackState_t;
+
+static PairFeedbackState_t g_pair_fb_state = PAIR_FB_NONE;
+static uint32_t g_pair_fb_tick = 0U;
+static uint8_t g_pair_fb_step = 0U;
 
 /* TX 三键事件（由按键状态机在主循环生成） */
 static volatile uint8_t g_tx_evt_l = 0U;
@@ -318,9 +355,6 @@ static uint8_t g_light_bright = TLIGHT_BRIGHT_30;
 /* 相位锁定节拍（1ms） */
 static volatile uint16_t g_phase_1ms = 0U;
 
-/* 夜间初期双通道采样调试 */
-static uint32_t g_night_start_tick = 0;     /* 夜间开始时间 */
-static uint8_t  g_night_debug_window = 0;   /* 是否在调试窗口内（夜间开始后6秒） */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -355,9 +389,14 @@ static void PwmGlobal_Set(uint16_t pulse);
 static void Channel_ApplyMask(uint8_t mask);
 static void PairingLed_Update(uint32_t now);
 static void PairingLed_Feedback(uint8_t success);
-static void TxKeys_Process(uint32_t now);
+static uint8_t TxKey_ReadRaw(uint16_t pin, GPIO_TypeDef *port);
+static void TxKeys_Process(uint32_t now, uint8_t tick_1ms);
 static void TxKeyR_DebugLedTask(uint32_t now);
 static uint16_t GetPhase1ms(uint16_t period_ms);
+static void EnterTxLowPower(void);
+static void ExitTxLowPower(void);
+static void LowPowerDiag_LogRfPins(void);
+static void LowPowerDiag_LogWakeFlags(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -541,16 +580,20 @@ static void UartCmd_HandleLine(const char *line)
 static void UartCmd_Poll(void)
 {
   uint8_t ch = 0;
+  uint8_t processed = 0U;
 
-  while (HAL_UART_Receive(&huart1, &ch, 1, 0) == HAL_OK) {
+  while ((processed < UART_CMD_POLL_MAX_BYTES) && (HAL_UART_Receive(&huart1, &ch, 1, 0) == HAL_OK)) {
+#if UART_CMD_ECHO_ENABLE
     /* 回显，便于确认命令确实被固件接收到了 */
     HAL_UART_Transmit(&huart1, &ch, 1, 20);
+#endif
 
     if ((ch == '\r') || (ch == '\n')) {
       DebugPrint("\r\n");
       g_uart_cmd_buf[g_uart_cmd_len] = '\0';
       UartCmd_HandleLine(g_uart_cmd_buf);
       g_uart_cmd_len = 0;
+      processed++;
       continue;
     }
 
@@ -562,6 +605,8 @@ static void UartCmd_Poll(void)
         DebugPrint("[CMD-ERR] too long\r\n");
       }
     }
+
+    processed++;
   }
 }
 
@@ -637,6 +682,101 @@ static void KeyPairing_Poll(uint32_t now)
 #endif
 }
 
+/* TX 进入低功耗前的统一收敛：
+ * 1) RF 无条件下发睡眠
+ * 2) 三线固定为 CSN=高、SCK=低、DATA=低，避免悬空/毛刺导致模块额外耗电
+ * 3) 关闭串口，减少静态功耗 */
+static void LowPowerDiag_LogRfPins(void)
+{
+#if LOWPOWER_DIAG_ENABLE
+  uint8_t csn = (HAL_GPIO_ReadPin(RF_CSN_GPIO_Port, RF_CSN_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+  uint8_t sck = (HAL_GPIO_ReadPin(RF_SCK_GPIO_Port, RF_SCK_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+  uint8_t dat = (HAL_GPIO_ReadPin(RF_DATA_GPIO_Port, RF_DATA_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+
+  DebugPrint("[LP-RF-PIN] CSN=");
+  DebugPrintDec(csn);
+  DebugPrint(" SCK=");
+  DebugPrintDec(sck);
+  DebugPrint(" DAT=");
+  DebugPrintDec(dat);
+  DebugPrint("\r\n");
+#endif
+}
+
+static void LowPowerDiag_LogWakeFlags(void)
+{
+#if LOWPOWER_DIAG_ENABLE
+  uint8_t wufi = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUFI) != 0U) ? 1U : 0U;
+  uint8_t wuf1 = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF1) != 0U) ? 1U : 0U;
+  uint8_t wuf2 = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF2) != 0U) ? 1U : 0U;
+
+  DebugPrint("[LP-WAKE] cnt=");
+  DebugPrintDec((uint16_t)(g_lp_wake_cnt & 0xFFFFU));
+  DebugPrint(" WUFI=");
+  DebugPrintDec(wufi);
+  DebugPrint(" WUF1=");
+  DebugPrintDec(wuf1);
+  DebugPrint(" WUF2=");
+  DebugPrintDec(wuf2);
+  DebugPrint("\r\n");
+#endif
+}
+
+static void EnterTxLowPower(void)
+{
+  /* 诊断打印必须在串口关闭前执行 */
+#if LOWPOWER_DIAG_ENABLE
+  g_lp_enter_cnt++;
+  DebugPrint("[LP-ENTER] cnt=");
+  DebugPrintDec((uint16_t)(g_lp_enter_cnt & 0xFFFFU));
+  DebugPrint("\r\n");
+#endif
+
+  RF_Link_Sleep();
+  g_rf_sleeping = 1U;
+
+  HAL_GPIO_WritePin(RF_CSN_GPIO_Port, RF_CSN_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(RF_SCK_GPIO_Port, RF_SCK_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(RF_DATA_GPIO_Port, RF_DATA_Pin, GPIO_PIN_RESET);
+
+#if LOWPOWER_DIAG_ENABLE
+  LowPowerDiag_LogRfPins();
+#endif
+
+  /* 低功耗前关闭串口，减少外设静态功耗 */
+  HAL_UART_DeInit(&huart1);
+
+#if (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STOP)
+  /* STOP 前暂停 1ms Tick 与 TIM14，避免高频周期唤醒导致电流居高不下 */
+  HAL_TIM_Base_Stop_IT(&htim14);
+  HAL_SuspendTick();
+#endif
+}
+
+/* TX 退出低功耗后的统一恢复：
+ * STOP 唤醒后需要先恢复系统时钟，再恢复 Tick/TIM14，最后初始化串口。
+ * SLEEP 唤醒仅需恢复串口。 */
+static void ExitTxLowPower(void)
+{
+#if (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STOP)
+  SystemClock_Config();
+  HAL_ResumeTick();
+  HAL_TIM_Base_Start_IT(&htim14);
+#endif
+  MX_USART1_UART_Init();
+
+  g_tx_lp_wake_tick = HAL_GetTick();
+
+#if LOWPOWER_DIAG_ENABLE
+  g_lp_wake_cnt++;
+  LowPowerDiag_LogWakeFlags();
+#endif
+
+#if APP_ROLE_TX_ONLY
+  g_tx_lp_wake_tick = HAL_GetTick();
+#endif
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -675,6 +815,27 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim14);
   DevId_LoadFromFlash();
   DebugPrint("[FW] " FW_VERSION "\r\n");
+
+  DebugPrint("[CFG] role=");
+#if APP_ROLE_TX_ONLY
+  DebugPrint("TX");
+#else
+  DebugPrint("RX");
+#endif
+  DebugPrint(" link_test=");
+#if APP_RF_LINK_TEST
+  DebugPrint("1");
+#else
+  DebugPrint("0");
+#endif
+  DebugPrint(" lowpower=");
+#if (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STOP)
+  DebugPrint("STOP");
+#else
+  DebugPrint("SLEEP");
+#endif
+  DebugPrint("\r\n");
+
   DebugPrint("[DEV] local=");
   DebugPrintHex((const uint8_t *)&g_dev_id_local, 2);
   DebugPrint(" paired=");
@@ -711,13 +872,13 @@ int main(void)
   RF_Link_Init();
   DebugPrint("RF Init OK\r\n");
 
-#if APP_RF_LINK_TEST && APP_ROLE_RX_ONLY
-  /* 链路测试：RX-only */
+#if APP_ROLE_RX_ONLY
+  /* RX 角色：上电进入接收模式 */
   DebugPrint("RF Config RX...\r\n");
   RF_Link_ConfigRx(RF_RX_CHANNEL);
   g_rf_mode = 0;
-#elif APP_RF_LINK_TEST && APP_ROLE_TX_ONLY
-  /* 链路测试：TX-only，上电保温一段时间后再进入休眠策略 */
+#elif APP_ROLE_TX_ONLY
+  /* TX 角色：上电进入发送模式并保温一段时间，再按空闲策略休眠 */
   DebugPrint("RF Config TX...\r\n");
   RF_Link_ConfigTx(RF_TX_CHANNEL);
   g_rf_mode = 1;
@@ -727,11 +888,6 @@ int main(void)
   g_tx_boot_warm_until = HAL_GetTick() + RF_TX_BOOT_WARM_MS;
   g_tx_first_event_done = 0U;
   DebugPrint("[RF] TX warm@boot\r\n");
-#else
-  /* 默认进入 RX 模式，监听频道 75（保持原 demo 行为） */
-  DebugPrint("RF Config RX...\r\n");
-  RF_Link_ConfigRx(RF_RX_CHANNEL);
-  g_rf_mode = 0;
 #endif
   DebugPrint("RF Ready\r\n");
 #endif
@@ -758,14 +914,7 @@ int main(void)
   g_led_state = 0;
   g_led_on_tick = 0;
 
-  g_is_night = 1;
-  g_last_daynight_tick = HAL_GetTick();
-  g_daynight_hold_until_tick = 0;  /* 0=未在确认中，非0=满足条件后需持续到该 tick 才翻转 */
-
-  g_last_charge_tick = HAL_GetTick();
-
   g_rf_sleeping = 0;
-  g_rf_sleeping_night = 0;
 
 #if APP_ROLE_RX_ONLY
   /* 按说明书对齐：RX 上电后自动进入 5 秒对码窗口（无需按键） */
@@ -794,16 +943,21 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
   {
-    static uint8_t last_is_night = 1;  /* 积木6/7：日夜切换时处理 RF 与低功耗 */
     /* 积木8：喂狗 - 暂时禁用 */
     // HAL_IWDG_Refresh(&hiwdg);
 
     /* P1：串口命令入口（临时对码） */
     UartCmd_Poll();
 
-#if APP_RF_LINK_TEST
-      /* 直接做收发链路测试，跳过后续日夜/同步/低功耗逻辑 */
+      /* 收发业务主流程（TX/RX 角色按宏切换）；
+       * APP_RF_LINK_TEST 仅用于控制附加调试打印，不再决定是否执行该主流程。 */
+      static uint32_t s_last_tick_ms = 0U;
       uint32_t now = HAL_GetTick();
+      uint8_t tick_1ms = 0U;
+      if (now != s_last_tick_ms) {
+        s_last_tick_ms = now;
+        tick_1ms = 1U;
+      }
 
       /* P2：按键对码入口（L+R 长按） */
       KeyPairing_Poll(now);
@@ -812,8 +966,8 @@ int main(void)
       PairingLed_Update(now);
 
 #if APP_ROLE_TX_ONLY
-      /* 三键语义：主循环按状态机识别单击/双击/长按并更新 mode/brightness */
-      TxKeys_Process(now);
+      /* 三键语义：按参考工程改为严格 1ms 节拍驱动按键扫描 */
+      TxKeys_Process(now, tick_1ms);
 
 #if TX_KEY_R_DEBUG_ONLY
       /* 右键本地调试模式：仅做按键识别与 LED 反馈，不发送业务包 */
@@ -1035,33 +1189,76 @@ int main(void)
       LinkStats_Log(now);
 #endif
 
-      /* 继续下一轮测试 */
-      continue;
-#endif /* APP_RF_LINK_TEST */
+#if APP_ROLE_TX_ONLY
+    /* TX 角色：当业务空闲时进入低功耗，不再依赖历史太阳能“昼夜判定”逻辑 */
+    {
+      uint32_t now = HAL_GetTick();
+      uint8_t tx_busy = 0U;
 
-    
-    if(g_is_night) {
-      /* 夜间：同步+闪灯 */
-      Sync_MainLoop();
-      SyncLamp_Update();
-      HAL_Delay(1);
-    } else {
-      /* 白天：关灯，不跑同步 */
-      HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
-      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-
-      if(!g_rf_sleeping) {
-        RF_Link_Sleep();
-        g_rf_sleeping = 1;
+      if ((g_pairing_mode != 0U) || (g_tx_need_send != 0U) || (g_tx_burst_left > 0U)) {
+        tx_busy = 1U;
+      }
+      if ((g_tx_rf_awake != 0U) && ((now - g_tx_last_send_tick) < LINK_TX_BURST_INTERVAL_MS)) {
+        tx_busy = 1U;
+      }
+      if ((g_tx_lp_wake_tick != 0U) && ((now - g_tx_lp_wake_tick) < TX_LP_WAKE_GUARD_MS)) {
+        tx_busy = 1U;
       }
 
-            /* 积木7：白天 CPU 进入 Sleep(WFI)，靠 SysTick 唤醒 */
-      /* 进入睡眠前禁用串口以降低功耗 */
-      HAL_UART_DeInit(&huart1);
-      HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-      /* 唤醒后重新初始化串口 */
-      MX_USART1_UART_Init();
+      {
+        uint8_t l_now = TxKey_ReadRaw(L_KEY_Pin, L_KEY_GPIO_Port);
+        uint8_t m_now = TxKey_ReadRaw(M_KEY_Pin, M_KEY_GPIO_Port);
+        uint8_t r_now = TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port);
+
+        /* 核心策略：只要任一键仍处于按下态，就绝不进入低功耗。
+         * 这样长按过程中不会被 STOP 打断。 */
+        if ((l_now != 0U) || (m_now != 0U) || (r_now != 0U)) {
+          tx_busy = 1U;
+          g_tx_key_active_until_tick = now + TX_LP_KEY_ACTIVE_HOLD_MS;
+        }
+
+        if ((int32_t)(g_tx_key_active_until_tick - now) > 0) {
+          tx_busy = 1U;
+        }
+      }
+
+      if (tx_busy != 0U) {
+        /* 业务繁忙：若刚从低功耗唤醒，先恢复 RF 到 TX，再继续按键/发包 */
+        if (g_rf_sleeping != 0U) {
+          g_rf_sleeping = 0U;
+          if (g_tx_rf_awake == 0U) {
+            RF_Link_ConfigTx(RF_TX_CHANNEL);
+            g_tx_rf_awake = 1U;
+            g_tx_rf_wakeup_tick = now;
+#if APP_RF_LINK_TEST
+            DebugPrint("[RF] wake->tx (idle_exit)\r\n");
+#endif
+          }
+        }
+        HAL_Delay(1);
+      } else {
+        HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
+        if(!g_rf_sleeping) {
+          EnterTxLowPower();
+        }
+
+#if (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STOP)
+        HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_STOP);
+        HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
+        HAL_PWREx_DisableFlashPowerDown(PWR_FLASHPD_STOP);
+#else
+        HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+#endif
+
+        ExitTxLowPower();
+      }
     }
+#else
+    /* RX 角色：保持主循环常规调度 */
+    HAL_Delay(1);
+#endif
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -1392,6 +1589,32 @@ static void Channel_ApplyMask(uint8_t mask)
 
 static void PairingLed_Update(uint32_t now)
 {
+  /* 对码反馈优先级最高，且必须非阻塞，避免影响按键扫描 */
+  if (g_pair_fb_state == PAIR_FB_SUCCESS) {
+    g_led_state = 0;
+    if ((now - g_pair_fb_tick) >= 120U) {
+      g_pair_fb_tick = now;
+      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+      g_pair_fb_step++;
+      if (g_pair_fb_step >= 6U) {
+        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+        g_pair_fb_state = PAIR_FB_NONE;
+        g_pair_fb_step = 0U;
+      }
+    }
+    return;
+  }
+
+  if (g_pair_fb_state == PAIR_FB_FAIL) {
+    g_led_state = 0;
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+    if ((now - g_pair_fb_tick) >= 1000U) {
+      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+      g_pair_fb_state = PAIR_FB_NONE;
+    }
+    return;
+  }
+
   if (g_pairing_mode == 0U) {
     return;
   }
@@ -1407,24 +1630,17 @@ static void PairingLed_Update(uint32_t now)
 
 static void PairingLed_Feedback(uint8_t success)
 {
-  uint8_t i = 0;
-
   /* 反馈期间关闭普通短亮状态，防止抢占 */
   g_led_state = 0;
+  g_pair_fb_tick = HAL_GetTick();
+  g_pair_fb_step = 0U;
 
   if (success != 0U) {
-    /* 成功：闪 3 次 */
-    for (i = 0; i < 3U; i++) {
-      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-      HAL_Delay(120);
-      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-      HAL_Delay(120);
-    }
-  } else {
-    /* 失败/超时：长亮 1000ms */
+    g_pair_fb_state = PAIR_FB_SUCCESS;
     HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-    HAL_Delay(1000);
-    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+  } else {
+    g_pair_fb_state = PAIR_FB_FAIL;
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
   }
 }
 
@@ -1433,12 +1649,17 @@ static uint8_t TxKey_ReadRaw(uint16_t pin, GPIO_TypeDef *port)
   return (HAL_GPIO_ReadPin(port, pin) == KEY_ACTIVE_LEVEL) ? 1U : 0U;
 }
 
-static uint8_t TxKey_Update(TxKeyState_t *ks, uint8_t raw, uint32_t now, uint8_t *evt_single, uint8_t *evt_double, uint8_t *evt_long)
+static uint8_t TxKey_Update(TxKeyState_t *ks, uint8_t raw, uint32_t now, uint8_t tick_1ms, uint8_t *evt_single, uint8_t *evt_double, uint8_t *evt_long)
 {
   uint8_t changed = 0U;
   *evt_single = 0U;
   *evt_double = 0U;
   *evt_long = 0U;
+
+  /* 对齐参考工程：按键识别仅在 1ms 节拍中推进，避免主循环阻塞造成采样漂移 */
+  if (tick_1ms == 0U) {
+    return 0U;
+  }
 
   if (raw != ks->last_raw) {
     ks->last_raw = raw;
@@ -1463,7 +1684,7 @@ static uint8_t TxKey_Update(TxKeyState_t *ks, uint8_t raw, uint32_t now, uint8_t
             ks->click_pending = 0U;
             ks->suppress_release_after_double = 1U;
           } else {
-            /* 第二次按下已超窗：上一击补发 single，本次按下作为新一轮 */
+            /* 第二次按下超窗：上一击补发单击，本次按下作为新一轮 */
             *evt_single = 1U;
             ks->click_pending = 0U;
           }
@@ -1643,14 +1864,14 @@ static void Tx_HandleOffTrigger(uint8_t key, const char *trig)
   Tx_DoOff((key == TLIGHT_KEY_L) ? "L" : ((key == TLIGHT_KEY_M) ? "M" : "R"), trig);
 }
 
-static void TxKeys_Process(uint32_t now)
+static void TxKeys_Process(uint32_t now, uint8_t tick_1ms)
 {
 #if APP_ROLE_TX_ONLY
   uint8_t changed = 0U;
   uint8_t s = 0U, d = 0U, l = 0U;
 
 #if TX_KEY_R_DEBUG_ONLY
-  (void)TxKey_Update(&g_txk_r, TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port), now, &s, &d, &l);
+  (void)TxKey_Update(&g_txk_r, TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port), now, tick_1ms, &s, &d, &l);
   if (s) {
     g_rdbg_evt_single = 1U;
     g_rdbg_single_cnt++;
@@ -1677,17 +1898,17 @@ static void TxKeys_Process(uint32_t now)
     DebugPrint("ms\r\n");
   }
 #else
-  (void)TxKey_Update(&g_txk_l, TxKey_ReadRaw(L_KEY_Pin, L_KEY_GPIO_Port), now, &s, &d, &l);
+  (void)TxKey_Update(&g_txk_l, TxKey_ReadRaw(L_KEY_Pin, L_KEY_GPIO_Port), now, tick_1ms, &s, &d, &l);
   if (s) { g_tx_evt_l = 1U; }
   if (d) { Tx_HandleOffTrigger(0U, "double"); changed = 1U; }
   if (l) { Tx_HandleOffTrigger(0U, "long"); changed = 1U; }
 
-  (void)TxKey_Update(&g_txk_m, TxKey_ReadRaw(M_KEY_Pin, M_KEY_GPIO_Port), now, &s, &d, &l);
+  (void)TxKey_Update(&g_txk_m, TxKey_ReadRaw(M_KEY_Pin, M_KEY_GPIO_Port), now, tick_1ms, &s, &d, &l);
   if (s) { g_tx_evt_m = 1U; }
   if (d) { Tx_HandleOffTrigger(1U, "double"); changed = 1U; }
   if (l) { Tx_HandleOffTrigger(1U, "long"); changed = 1U; }
 
-  (void)TxKey_Update(&g_txk_r, TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port), now, &s, &d, &l);
+  (void)TxKey_Update(&g_txk_r, TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port), now, tick_1ms, &s, &d, &l);
   if (s) { g_tx_evt_r = 1U; }
   if (d) { Tx_HandleOffTrigger(2U, "double"); changed = 1U; }
   if (l) { Tx_HandleOffTrigger(2U, "long"); changed = 1U; }
@@ -1736,6 +1957,7 @@ static void TxKeys_Process(uint32_t now)
 #endif
 #else
   (void)now;
+  (void)tick_1ms;
   /* RX 构建保持空实现 */
 #endif
 }
@@ -1829,15 +2051,11 @@ static void Light_Tick(uint32_t now)
 {
   const uint16_t base = Bright_ToPulse(g_light_bright);
 
-  /* 对齐说明书参数：
-   * mode4: 250ms亮+250ms灭（2Hz）
-   * mode5: A/B 交替（左远+右近 / 右远+左近）
-   * mode6: 2s呼吸周期
-   * mode7: 左右远光轮闪 */
-  const uint16_t fast_ms = 250U;    /* mode4 */
-  const uint16_t alt_ms  = 500U;    /* mode5 */
-  const uint16_t wheel_ms = 250U;   /* mode7 */
-  const uint16_t breath_ms = 2000U; /* mode6 */
+  /* 对齐说明书参数（统一从宏读取，便于快速调参） */
+  const uint16_t fast_ms = FX4_FLASH_HALF_PERIOD_MS;    /* mode4 */
+  const uint16_t alt_ms  = FX5_ALT_HALF_PERIOD_MS;      /* mode5 */
+  const uint16_t wheel_ms = FX7_WHEEL_HALF_PERIOD_MS;   /* mode7 */
+  const uint16_t breath_ms = FX6_BREATH_PERIOD_MS;      /* mode6 */
 
   uint8_t mask = 0U;
   uint16_t pulse = 0U;

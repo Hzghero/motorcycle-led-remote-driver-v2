@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.7-TxKeyDouble200-RfChGuard"
+#define FW_VERSION "v2.10.17-LPNoSleepWhilePress"
 
 /* USER CODE END EC */
 

@@ -126,8 +126,20 @@ unsigned char RF_TX_Data(unsigned char* tx_buff);
 unsigned char RF_RX_Data(unsigned char* rx_buff);
 
 /* User configuration */
-#define RF_TX_Power         C_RF13dBm   /* 最大功率 13dBm，增强传输距离 */
-#define RF_BAUD             C_DR_250K
-#define RF_PACKET_SIZE      9
+#define RF_TX_Power                    C_RF13dBm   /* 最大功率 13dBm，增强传输距离 */
+#define RF_BAUD                        C_DR_250K
+#define RF_PACKET_SIZE                 9
+
+/* TX 发送后等待策略（按键实时性优化）
+ * 1：固定延时模式（兼容旧版，阻塞更长）
+ * 0：快速轮询模式（推荐，显著降低主循环阻塞） */
+#define RF_TX_USE_FIXED_DELAY_MODE     0U
+
+/* 固定延时模式参数：仅在 RF_TX_USE_FIXED_DELAY_MODE=1 时生效 */
+#define RF_TX_POST_CE_FIXED_DELAY_MS   100U
+
+/* 快速轮询模式参数：仅在 RF_TX_USE_FIXED_DELAY_MODE=0 时生效 */
+#define RF_TX_STATUS_WAIT_TIMEOUT_MS   3U
+
 
 #endif /* __XL2400T_H */
