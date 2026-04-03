@@ -57,6 +57,16 @@
 #define APP_ROLE_RX_ONLY            1U  /* 1=接收端固件 */
 #define APP_ROLE_TX_ONLY            0U  /* 1=发射端固件 */
 
+/* [A-2] RX 三线输入复用映射（仅 RX 角色生效）
+ * 说明：同一工程内复用 TX 三键 IO 口给 RX 车辆输入，靠角色宏区分避免冲突。 */
+#define RX_ACC_IN_PORT              L_KEY_GPIO_Port
+#define RX_ACC_IN_PIN               L_KEY_Pin
+#define RX_CAR_HI_IN_PORT           M_KEY_GPIO_Port
+#define RX_CAR_HI_IN_PIN            M_KEY_Pin
+#define RX_HORN_IN_PORT             R_KEY_GPIO_Port
+#define RX_HORN_IN_PIN              R_KEY_Pin
+#define RX_IN_ACTIVE_LEVEL          GPIO_PIN_SET
+
 /* [B] 低功耗与诊断 */
 #define TX_LOWPOWER_MODE_SLEEP      0U
 #define TX_LOWPOWER_MODE_STOP       1U
@@ -349,8 +359,19 @@ static uint8_t g_rdbg_led_long_remain = 0U;
 #endif
 
 /* 双路 PWM 灯效状态（RX-only） */
-static uint8_t g_light_mode = TLIGHT_MODE_MIN;
+static uint8_t g_light_mode = TLIGHT_MODE_OFF;
 static uint8_t g_light_bright = TLIGHT_BRIGHT_30;
+
+/* RX 三线输入状态（ACC/原车远光/喇叭） */
+static uint8_t g_rx_acc_last = 0U;
+static uint8_t g_rx_hi_last = 0U;
+static uint8_t g_rx_horn_last = 0U;
+static uint8_t g_rx_horn_active = 0U;
+static uint8_t g_rx_pre_horn_mode = TLIGHT_MODE_OFF;
+static uint8_t g_rx_pre_horn_bright = TLIGHT_BRIGHT_30;
+static uint8_t g_rx_remote_pending_valid = 0U;
+static uint8_t g_rx_remote_pending_mode = TLIGHT_MODE_OFF;
+static uint8_t g_rx_remote_pending_bright = TLIGHT_BRIGHT_30;
 
 /* 相位锁定节拍（1ms） */
 static volatile uint16_t g_phase_1ms = 0U;
@@ -389,6 +410,7 @@ static void PwmGlobal_Set(uint16_t pulse);
 static void Channel_ApplyMask(uint8_t mask);
 static void PairingLed_Update(uint32_t now);
 static void PairingLed_Feedback(uint8_t success);
+static void RxWireInput_Poll(uint32_t now);
 static uint8_t TxKey_ReadRaw(uint16_t pin, GPIO_TypeDef *port);
 static void TxKeys_Process(uint32_t now, uint8_t tick_1ms);
 static void TxKeyR_DebugLedTask(uint32_t now);
@@ -921,6 +943,12 @@ int main(void)
   g_pairing_mode = 1U;
   g_pairing_enter_tick = HAL_GetTick();
   DebugPrint("[PAIR] auto enter (rx, 5s window)\r\n");
+
+  /* RX 三线输入初值采样（用于遥控命令与三线优先级仲裁） */
+  g_rx_acc_last = (HAL_GPIO_ReadPin(RX_ACC_IN_PORT, RX_ACC_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  g_rx_hi_last = (HAL_GPIO_ReadPin(RX_CAR_HI_IN_PORT, RX_CAR_HI_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  g_rx_horn_last = (HAL_GPIO_ReadPin(RX_HORN_IN_PORT, RX_HORN_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  g_rx_horn_active = g_rx_horn_last;
 #endif
 
 #if DEBUG_ADC_VERBOSE
@@ -1092,6 +1120,10 @@ int main(void)
         if (ParseTempLightPacket(RF_RX_Buf, &mode, &bright, &cur_key, &cur_trig)) {
           uint8_t seq = (uint8_t)(RF_RX_Buf[TLIGHT_PKT_KEYTRIG_IDX] & 0x0FU);
 
+          /* 中文说明：
+           * RX 收到合法遥控包后，先更新链路统计；
+           * 真正是否立即改灯态，要受“ACC/喇叭强制态”仲裁约束。 */
+
           g_link_rx_ok++;
           g_link_last_rx_tick = now;
           g_link_timeout_flag = 0;
@@ -1114,8 +1146,21 @@ int main(void)
 
           cur_mode = mode;
           cur_bright = bright;
-          g_light_mode = cur_mode;
-          g_light_bright = cur_bright;
+
+          /* P4 遥控命令融合规则：
+           * - ACC=0：忽略遥控输出变更；
+           * - HORN激活：缓存为pending，待喇叭释放后优先恢复；
+           * - 其余情况：立即应用遥控灯态。 */
+          if (g_rx_acc_last == 0U) {
+            /* ACC 关闭，遥控不改当前输出 */
+          } else if (g_rx_horn_active != 0U) {
+            g_rx_remote_pending_valid = 1U;
+            g_rx_remote_pending_mode = cur_mode;
+            g_rx_remote_pending_bright = cur_bright;
+          } else {
+            g_light_mode = cur_mode;
+            g_light_bright = cur_bright;
+          }
 
           if(cur_mode != last_print_mode || cur_bright != last_print_bright || cur_key != last_print_key || cur_trig != last_print_trig) {
             DebugPrint("[RX] mode=");
@@ -1177,7 +1222,10 @@ int main(void)
         DebugPrint("ms\r\n");
       }
 #endif
-      
+
+      /* RX 三线输入业务（ACC/原车远光/喇叭） */
+      RxWireInput_Poll(now);
+
       /* 驱动两路 PWM 输出（PA2=CH3, PA3=CH4） */
       Light_Tick(now);
 #endif
@@ -1491,17 +1539,29 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : L_KEY_Pin */
+#if APP_ROLE_TX_ONLY
+  /* TX 角色：三键输入（上升沿中断 + 下拉） */
   GPIO_InitStruct.Pin = L_KEY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(L_KEY_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M_KEY_Pin R_KEY_Pin */
   GPIO_InitStruct.Pin = M_KEY_Pin|R_KEY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#else
+  /* RX 角色：复用三键IO作为车辆输入（ACC/远光/喇叭），采用普通输入轮询 */
+  GPIO_InitStruct.Pin = L_KEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(L_KEY_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = M_KEY_Pin|R_KEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#endif
 
   /*Configure GPIO pins : MOS_L_HI_Pin MOS_L_LO_Pin MOS_R_HI_Pin MOS_R_LO_Pin */
   GPIO_InitStruct.Pin = MOS_L_HI_Pin|MOS_L_LO_Pin|MOS_R_HI_Pin|MOS_R_LO_Pin;
@@ -1642,6 +1702,73 @@ static void PairingLed_Feedback(uint8_t success)
     g_pair_fb_state = PAIR_FB_FAIL;
     HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
   }
+}
+
+/* RX 三线输入处理（冲突优先级状态表）
+ * P0: ACC=0 -> 强制OFF（最高优先级）
+ * P1: ACC=1 且 HORN=1 -> 强制爆闪（模式4）
+ * P2: HORN 下降沿释放 -> 回到黄线状态（HI=1远光/HI=0近光）
+ * P3: HORN=0 时，黄线边沿控制近/远光（上升=远光，下降=近光）
+ * P4: 遥控命令仅在未触发 P0/P1 强制态时生效（已落地）。 */
+static void RxWireInput_Poll(uint32_t now)
+{
+#if APP_ROLE_RX_ONLY
+  uint8_t acc  = (HAL_GPIO_ReadPin(RX_ACC_IN_PORT, RX_ACC_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t hi   = (HAL_GPIO_ReadPin(RX_CAR_HI_IN_PORT, RX_CAR_HI_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t horn = (HAL_GPIO_ReadPin(RX_HORN_IN_PORT, RX_HORN_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+
+  (void)now;
+
+  if (acc == 0U) {
+    g_rx_horn_active = 0U;
+    g_light_mode = TLIGHT_MODE_OFF;
+    g_rx_acc_last = acc;
+    g_rx_hi_last = hi;
+    g_rx_horn_last = horn;
+    return;
+  }
+
+  if ((horn != 0U) && (g_rx_horn_last == 0U)) {
+    /* 喇叭上升沿：先快照当前状态，再进入爆闪覆盖态 */
+    g_rx_pre_horn_mode = g_light_mode;
+    g_rx_pre_horn_bright = g_light_bright;
+    g_rx_remote_pending_valid = 0U;
+
+    g_rx_horn_active = 1U;
+    g_light_mode = 4U; /* 映射到模式4 */
+    g_light_bright = TLIGHT_BRIGHT_100;
+  }
+  if ((horn == 0U) && (g_rx_horn_last != 0U)) {
+    g_rx_horn_active = 0U;
+
+    /* 喇叭释放优先级：
+     * 1) HORN期间若有遥控pending，优先应用pending
+     * 2) 否则恢复到HORN触发前快照状态 */
+    if (g_rx_remote_pending_valid != 0U) {
+      g_light_mode = g_rx_remote_pending_mode;
+      g_light_bright = g_rx_remote_pending_bright;
+      g_rx_remote_pending_valid = 0U;
+    } else {
+      g_light_mode = g_rx_pre_horn_mode;
+      g_light_bright = g_rx_pre_horn_bright;
+    }
+  }
+
+  if (g_rx_horn_active == 0U) {
+    if ((hi != 0U) && (g_rx_hi_last == 0U)) {
+      g_light_mode = 2U; /* 黄线上升沿：远光 */
+    }
+    if ((hi == 0U) && (g_rx_hi_last != 0U)) {
+      g_light_mode = 1U; /* 黄线下降沿：近光 */
+    }
+  }
+
+  g_rx_acc_last = acc;
+  g_rx_hi_last = hi;
+  g_rx_horn_last = horn;
+#else
+  (void)now;
+#endif
 }
 
 static uint8_t TxKey_ReadRaw(uint16_t pin, GPIO_TypeDef *port)
@@ -1830,13 +1957,13 @@ static void Tx_HandleSingle(uint8_t key)
   }
 }
 
+/* TX 双击/长按入口：
+ * - 左键：仅做“近光(1) <-> 同亮(3)”循环，不熄灯
+ * - 右键：用于熄灯；全灭状态下再次触发无效
+ * - 中键：当前保持熄灯行为（后续可按需求收敛） */
 static void Tx_HandleOffTrigger(uint8_t key, const char *trig)
 {
   uint8_t trig_code = TLIGHT_TRIG_NONE;
-
-  if (g_tx_is_off != 0U) {
-    return;
-  }
 
   if ((trig[0] == 'd') || (trig[0] == 'D')) {
     trig_code = TLIGHT_TRIG_DOUBLE;
@@ -1844,24 +1971,63 @@ static void Tx_HandleOffTrigger(uint8_t key, const char *trig)
     trig_code = TLIGHT_TRIG_LONG;
   }
 
+  /* 左键：双击/长按只做 近光 <-> 同亮 循环，不参与熄灯 */
   if (key == TLIGHT_KEY_L) {
-    if ((g_tx_mode != 3U) && (g_tx_left_all_on_armed == 0U)) {
+    if (g_tx_is_off != 0U) {
+      g_tx_is_off = 0U;
       g_tx_in_effect = 0U;
-      g_tx_basic_mode = 3U;
-      g_tx_mode = 3U;
-      g_tx_left_all_on_armed = 1U;
+      g_tx_basic_mode = 1U;
+      g_tx_mode = 1U;
       g_tx_last_key = TLIGHT_KEY_L;
       g_tx_last_trig = trig_code;
       DebugPrint("[TX-KEY] key=L trig=");
       DebugPrint(trig);
-      DebugPrint(" action=all_on\r\n");
+      DebugPrint(" action=off_to_basic1\r\n");
       return;
     }
+
+    g_tx_in_effect = 0U;
+    if (g_tx_mode == 3U) {
+      g_tx_basic_mode = 1U;
+      g_tx_mode = 1U;
+      DebugPrint("[TX-KEY] key=L trig=");
+      DebugPrint(trig);
+      DebugPrint(" action=all_on_to_basic1\r\n");
+    } else {
+      g_tx_basic_mode = 3U;
+      g_tx_mode = 3U;
+      DebugPrint("[TX-KEY] key=L trig=");
+      DebugPrint(trig);
+      DebugPrint(" action=basic1_to_all_on\r\n");
+    }
+    g_tx_last_key = TLIGHT_KEY_L;
+    g_tx_last_trig = trig_code;
+    return;
+  }
+
+  /* 右键：双击/长按=全灭；但全灭状态下再次触发无效 */
+  if (key == TLIGHT_KEY_R) {
+    if (g_tx_is_off != 0U) {
+      DebugPrint("[TX-KEY] key=R trig=");
+      DebugPrint(trig);
+      DebugPrint(" action=off_ignore\r\n");
+      return;
+    }
+
+    g_tx_last_key = key;
+    g_tx_last_trig = trig_code;
+    Tx_DoOff("R", trig);
+    return;
+  }
+
+  /* 中键保持旧行为：双击/长按触发熄灯（仅非OFF时） */
+  if (g_tx_is_off != 0U) {
+    return;
   }
 
   g_tx_last_key = key;
   g_tx_last_trig = trig_code;
-  Tx_DoOff((key == TLIGHT_KEY_L) ? "L" : ((key == TLIGHT_KEY_M) ? "M" : "R"), trig);
+  Tx_DoOff("M", trig);
 }
 
 static void TxKeys_Process(uint32_t now, uint8_t tick_1ms)
@@ -2086,13 +2252,13 @@ static void Light_Tick(uint32_t now)
       break;
     }
 
-    case 5: /* 远近交替闪：A=左远+右近，B=右远+左近 */
+    case 5: /* 远近交替闪：A=双近光，B=双远光（左右同相） */
     {
       uint16_t phase = GetPhase1ms((uint16_t)(alt_ms * 2U));
       if (phase < alt_ms) {
-        mask = (uint8_t)(CH_L_HI_MASK | CH_R_LO_MASK);
+        mask = (uint8_t)(CH_L_LO_MASK | CH_R_LO_MASK); /* 双近光 */
       } else {
-        mask = (uint8_t)(CH_R_HI_MASK | CH_L_LO_MASK);
+        mask = (uint8_t)(CH_L_HI_MASK | CH_R_HI_MASK); /* 双远光 */
       }
       pulse = base;
       break;

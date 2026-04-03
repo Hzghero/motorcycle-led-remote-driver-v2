@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.17-LPNoSleepWhilePress"
+#define FW_VERSION "v2.10.25-DocCommentSync"
 
 /* USER CODE END EC */
 
