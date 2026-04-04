@@ -4,9 +4,12 @@
 
 | 版本号 | 日期 | 修改要点 | 关联文件 |
 | --- | --- | --- | --- |
+| v2.10.28-RxWireDebounceHiDblGate | 2026-04-04 | RX 三线输入新增统一防抖（ACC/黄线/喇叭，默认 20ms），并落地“黄线首次双触发解锁”机制（窗口内两次稳定边沿后才生效）；同时同步更新《功能说明书》参数为代码现状并新增“旧值 vs 新值”对照表，便于联调与回溯。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/01-功能说明书.md`、`CHANGELOG_INDEX.md` |
+| v2.10.27-CfgPolarityLpTune | 2026-04-04 | 启动配置横幅 `[CFG]` 新增 `rx_polarity` 打印并固化 `horn_pending/improv` 状态标识，避免烧录后极性与仲裁策略遗忘；同时微调 TX 低功耗窗口（唤醒保护 0.8s、按键保持 1.1s）以平衡手感与待机电流。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |
 | v2.10.20-RxWireRemoteArbiter | 2026-04-02 | 完成 P4 遥控命令融合：仅在未被三线强制态覆盖时（ACC=1 且 HORN未激活）才应用遥控模式/亮度；并新增 RX 上电三线初值采样，避免首次仲裁误判。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |
 | v2.10.23-TxKeyRuleRefine | 2026-04-02 | 调整 TX 按键规则：左键双击/长按改为“近光↔同亮”循环且不触发熄灯；右键双击/长按触发全灭（OFF 状态下无效）；右键单击保留特效模式切换。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |
 | v2.10.25-DocCommentSync | 2026-04-02 | 继续收敛文档与代码可读性：在《01-功能说明书》中补充 RX 三线与遥控冲突优先级正式章节、上电安全态规则，并为主流程关键函数补充中文注释，便于快速定位功能语义。 | `docs/01-功能说明书.md`、`reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |
+| v2.10.26-RxWirePolarityMacro | 2026-04-02 | 新增 RX 三线输入极性切换宏：通过 `RX_WIRE_ACTIVE_POLARITY` 一键切换 NORMAL（高电平有效）/INVERTED（低电平有效），实现 ACC/黄线/蓝线触发边沿整体反向而不改业务状态机。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |
 | v2.10.24-DocSync-KeyRulesMatrix | 2026-04-02 | 同步更新《01-功能说明书》按键规则与熄灯章节：新增“最新规则 vs 旧规则”对照表，明确左/右键单双击长按行为、熄灯后点亮入口及模式5最新语义，避免文档与固件行为混淆。 | `docs/01-功能说明书.md`、`CHANGELOG_INDEX.md` |
 | v2.10.22-Mode5-NearFarAllToggle | 2026-04-02 | 调整模式5灯效语义：由“左右交叉组合交替（左远+右近 / 右远+左近）”改为“全近光与全远光交替（左右同相）”，以符合双灯头同步视觉预期。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |
 | v2.10.21-RxHornPendingRestore | 2026-04-02 | 细化 RX 冲突仲裁：HORN 上升沿快照当前灯态并进入爆闪；HORN 激活期间遥控命令转为 pending 缓存；HORN 释放时优先应用 pending，否则恢复到触发前快照状态。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |

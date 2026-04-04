@@ -65,7 +65,27 @@
 #define RX_CAR_HI_IN_PIN            M_KEY_Pin
 #define RX_HORN_IN_PORT             R_KEY_GPIO_Port
 #define RX_HORN_IN_PIN              R_KEY_Pin
+
+/* RX 三线输入极性切换：
+ * - NORMAL: 高电平有效（保持当前行为）
+ * - INVERTED: 低电平有效（整体反向） */
+#define RX_WIRE_ACTIVE_POLARITY_NORMAL    1U
+#define RX_WIRE_ACTIVE_POLARITY_INVERTED  0U
+#define RX_WIRE_ACTIVE_POLARITY           RX_WIRE_ACTIVE_POLARITY_NORMAL
+
+/* 三线防抖时间（单位ms） */
+#define RX_WIRE_DEBOUNCE_MS               20U
+
+/* 黄线首次生效门限：首次需“双击”后才放开黄线控制（单位ms） */
+#define RX_HI_FIRST_DBL_MS                600U
+
+#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
+#define RX_IN_ACTIVE_LEVEL          GPIO_PIN_RESET
+#define RX_WIRE_POLARITY_NAME       "INVERTED"
+#else
 #define RX_IN_ACTIVE_LEVEL          GPIO_PIN_SET
+#define RX_WIRE_POLARITY_NAME       "NORMAL"
+#endif
 
 /* [B] 低功耗与诊断 */
 #define TX_LOWPOWER_MODE_SLEEP      0U
@@ -163,8 +183,8 @@
 /* TX 低功耗抗漏按参数（方向A）：
  * - 唤醒保护窗口：唤醒后至少保持一段时间不回睡，给按键去抖/识别留时间
  * - 按键活动保持：检测到任一按键按下后，再保持一段时间活跃，避免短按被切碎 */
-#define TX_LP_WAKE_GUARD_MS          1000U /* 唤醒后至少保持1s活跃，避免首个长按被切碎 */
-#define TX_LP_KEY_ACTIVE_HOLD_MS     1400U /* 检测到按键活动后继续保持活跃时间 */
+#define TX_LP_WAKE_GUARD_MS           800U /* 微调：唤醒后保持0.8s活跃，兼顾首击手感与待机电流 */
+#define TX_LP_KEY_ACTIVE_HOLD_MS     1100U /* 微调：按键活动保持1.1s，覆盖双击/长按又减少常亮耗电 */
 
 /* 简化可见指示（用 LED_Pin，不做真实 LM3409 PWM 还原） */
 #define LED_FLASH_PERIOD_MS  250U   /* 闪烁周期 */
@@ -366,12 +386,23 @@ static uint8_t g_light_bright = TLIGHT_BRIGHT_30;
 static uint8_t g_rx_acc_last = 0U;
 static uint8_t g_rx_hi_last = 0U;
 static uint8_t g_rx_horn_last = 0U;
+static uint8_t g_rx_acc_raw_last = 0U;
+static uint8_t g_rx_hi_raw_last = 0U;
+static uint8_t g_rx_horn_raw_last = 0U;
+static uint32_t g_rx_acc_raw_change_tick = 0U;
+static uint32_t g_rx_hi_raw_change_tick = 0U;
+static uint32_t g_rx_horn_raw_change_tick = 0U;
 static uint8_t g_rx_horn_active = 0U;
 static uint8_t g_rx_pre_horn_mode = TLIGHT_MODE_OFF;
 static uint8_t g_rx_pre_horn_bright = TLIGHT_BRIGHT_30;
 static uint8_t g_rx_remote_pending_valid = 0U;
 static uint8_t g_rx_remote_pending_mode = TLIGHT_MODE_OFF;
 static uint8_t g_rx_remote_pending_bright = TLIGHT_BRIGHT_30;
+
+/* 黄线首次“双触发”解锁：未解锁前忽略黄线边沿；在窗口内发生两次边沿后解锁 */
+static uint8_t g_rx_hi_gate_unlocked = 0U;
+static uint8_t g_rx_hi_edge_cnt = 0U;
+static uint32_t g_rx_hi_first_edge_tick = 0U;
 
 /* 相位锁定节拍（1ms） */
 static volatile uint16_t g_phase_1ms = 0U;
@@ -856,6 +887,10 @@ int main(void)
 #else
   DebugPrint("SLEEP");
 #endif
+  DebugPrint(" rx_polarity=");
+  DebugPrint(RX_WIRE_POLARITY_NAME);
+  DebugPrint(" horn_pending=P4");
+  DebugPrint(" improv=mode5_ab_alt");
   DebugPrint("\r\n");
 
   DebugPrint("[DEV] local=");
@@ -948,6 +983,12 @@ int main(void)
   g_rx_acc_last = (HAL_GPIO_ReadPin(RX_ACC_IN_PORT, RX_ACC_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
   g_rx_hi_last = (HAL_GPIO_ReadPin(RX_CAR_HI_IN_PORT, RX_CAR_HI_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
   g_rx_horn_last = (HAL_GPIO_ReadPin(RX_HORN_IN_PORT, RX_HORN_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  g_rx_acc_raw_last = g_rx_acc_last;
+  g_rx_hi_raw_last = g_rx_hi_last;
+  g_rx_horn_raw_last = g_rx_horn_last;
+  g_rx_acc_raw_change_tick = HAL_GetTick();
+  g_rx_hi_raw_change_tick = g_rx_acc_raw_change_tick;
+  g_rx_horn_raw_change_tick = g_rx_acc_raw_change_tick;
   g_rx_horn_active = g_rx_horn_last;
 #endif
 
@@ -1709,19 +1750,52 @@ static void PairingLed_Feedback(uint8_t success)
  * P1: ACC=1 且 HORN=1 -> 强制爆闪（模式4）
  * P2: HORN 下降沿释放 -> 回到黄线状态（HI=1远光/HI=0近光）
  * P3: HORN=0 时，黄线边沿控制近/远光（上升=远光，下降=近光）
+ *     其中“黄线首次生效”需先在窗口内出现两次边沿（双触发）后才解锁；
+ *     解锁后按边沿正常生效。该规则兼容正/负逻辑极性配置。
  * P4: 遥控命令仅在未触发 P0/P1 强制态时生效（已落地）。 */
 static void RxWireInput_Poll(uint32_t now)
 {
 #if APP_ROLE_RX_ONLY
-  uint8_t acc  = (HAL_GPIO_ReadPin(RX_ACC_IN_PORT, RX_ACC_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
-  uint8_t hi   = (HAL_GPIO_ReadPin(RX_CAR_HI_IN_PORT, RX_CAR_HI_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
-  uint8_t horn = (HAL_GPIO_ReadPin(RX_HORN_IN_PORT, RX_HORN_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t acc_raw  = (HAL_GPIO_ReadPin(RX_ACC_IN_PORT, RX_ACC_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t hi_raw   = (HAL_GPIO_ReadPin(RX_CAR_HI_IN_PORT, RX_CAR_HI_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t horn_raw = (HAL_GPIO_ReadPin(RX_HORN_IN_PORT, RX_HORN_IN_PIN) == RX_IN_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t acc = g_rx_acc_last;
+  uint8_t hi = g_rx_hi_last;
+  uint8_t horn = g_rx_horn_last;
 
-  (void)now;
+  if (acc_raw != g_rx_acc_raw_last) {
+    g_rx_acc_raw_last = acc_raw;
+    g_rx_acc_raw_change_tick = now;
+  }
+  if ((now - g_rx_acc_raw_change_tick) >= RX_WIRE_DEBOUNCE_MS) {
+    acc = acc_raw;
+  }
+
+  if (hi_raw != g_rx_hi_raw_last) {
+    g_rx_hi_raw_last = hi_raw;
+    g_rx_hi_raw_change_tick = now;
+  }
+  if ((now - g_rx_hi_raw_change_tick) >= RX_WIRE_DEBOUNCE_MS) {
+    hi = hi_raw;
+  }
+
+  if (horn_raw != g_rx_horn_raw_last) {
+    g_rx_horn_raw_last = horn_raw;
+    g_rx_horn_raw_change_tick = now;
+  }
+  if ((now - g_rx_horn_raw_change_tick) >= RX_WIRE_DEBOUNCE_MS) {
+    horn = horn_raw;
+  }
 
   if (acc == 0U) {
     g_rx_horn_active = 0U;
     g_light_mode = TLIGHT_MODE_OFF;
+
+    /* ACC 关闭时，重置黄线首次双触发门限；下次ACC有效后重新判定首次双触发 */
+    g_rx_hi_gate_unlocked = 0U;
+    g_rx_hi_edge_cnt = 0U;
+    g_rx_hi_first_edge_tick = 0U;
+
     g_rx_acc_last = acc;
     g_rx_hi_last = hi;
     g_rx_horn_last = horn;
@@ -1755,11 +1829,34 @@ static void RxWireInput_Poll(uint32_t now)
   }
 
   if (g_rx_horn_active == 0U) {
-    if ((hi != 0U) && (g_rx_hi_last == 0U)) {
-      g_light_mode = 2U; /* 黄线上升沿：远光 */
+    uint8_t hi_edge = (uint8_t)((hi != g_rx_hi_last) ? 1U : 0U);
+
+    if (g_rx_hi_gate_unlocked == 0U) {
+      if (hi_edge != 0U) {
+        if (g_rx_hi_edge_cnt == 0U) {
+          g_rx_hi_edge_cnt = 1U;
+          g_rx_hi_first_edge_tick = now;
+        } else {
+          if ((now - g_rx_hi_first_edge_tick) <= RX_HI_FIRST_DBL_MS) {
+            g_rx_hi_gate_unlocked = 1U;
+            g_rx_hi_edge_cnt = 0U;
+            g_rx_hi_first_edge_tick = 0U;
+          } else {
+            /* 超窗：以当前边沿作为新的第一次 */
+            g_rx_hi_edge_cnt = 1U;
+            g_rx_hi_first_edge_tick = now;
+          }
+        }
+      }
     }
-    if ((hi == 0U) && (g_rx_hi_last != 0U)) {
-      g_light_mode = 1U; /* 黄线下降沿：近光 */
+
+    if (g_rx_hi_gate_unlocked != 0U) {
+      if ((hi != 0U) && (g_rx_hi_last == 0U)) {
+        g_light_mode = 2U; /* 黄线上升沿：远光 */
+      }
+      if ((hi == 0U) && (g_rx_hi_last != 0U)) {
+        g_light_mode = 1U; /* 黄线下降沿：近光 */
+      }
     }
   }
 
@@ -1958,9 +2055,9 @@ static void Tx_HandleSingle(uint8_t key)
 }
 
 /* TX 双击/长按入口：
- * - 左键：仅做“近光(1) <-> 同亮(3)”循环，不熄灯
+ * - 左键：仅做“近光(1) <-> 同亮(3)”循环，不熄灯（OFF时可拉起到basic1）
  * - 右键：用于熄灯；全灭状态下再次触发无效
- * - 中键：当前保持熄灯行为（后续可按需求收敛） */
+ * - 中键：双击/长按等效单击（不熄灯） */
 static void Tx_HandleOffTrigger(uint8_t key, const char *trig)
 {
   uint8_t trig_code = TLIGHT_TRIG_NONE;
@@ -2005,6 +2102,15 @@ static void Tx_HandleOffTrigger(uint8_t key, const char *trig)
     return;
   }
 
+  /* 中键：双击/长按等效单击（亮度循环，不熄灯） */
+  if (key == TLIGHT_KEY_M) {
+    Tx_HandleSingle(TLIGHT_KEY_M);
+    DebugPrint("[TX-KEY] key=M trig=");
+    DebugPrint(trig);
+    DebugPrint(" action=as_single\r\n");
+    return;
+  }
+
   /* 右键：双击/长按=全灭；但全灭状态下再次触发无效 */
   if (key == TLIGHT_KEY_R) {
     if (g_tx_is_off != 0U) {
@@ -2019,15 +2125,6 @@ static void Tx_HandleOffTrigger(uint8_t key, const char *trig)
     Tx_DoOff("R", trig);
     return;
   }
-
-  /* 中键保持旧行为：双击/长按触发熄灯（仅非OFF时） */
-  if (g_tx_is_off != 0U) {
-    return;
-  }
-
-  g_tx_last_key = key;
-  g_tx_last_trig = trig_code;
-  Tx_DoOff("M", trig);
 }
 
 static void TxKeys_Process(uint32_t now, uint8_t tick_1ms)

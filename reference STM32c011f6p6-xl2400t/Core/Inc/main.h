@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.25-DocCommentSync"
+#define FW_VERSION "v2.10.28-RxWireDebounceHiDblGate"
 
 /* USER CODE END EC */
 
