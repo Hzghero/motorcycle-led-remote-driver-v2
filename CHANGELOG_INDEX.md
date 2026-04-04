@@ -4,6 +4,7 @@
 
 | 版本号 | 日期 | 修改要点 | 关联文件 |
 | --- | --- | --- | --- |
+| v2.10.30-Mode7DoublePulse | 2026-04-04 | 模式7改为左右交替“双脉冲轮闪”规则：单侧节拍 `100亮→130灭→100亮→330灭`，左右交替后单侧回访周期 1320ms；亮相位继续遵循 30/70/100 亮度档。同步更新《功能说明书》模式7描述。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/01-功能说明书.md`、`CHANGELOG_INDEX.md` |
 | v2.10.29-24MHzTimebaseFix | 2026-04-04 | 修正 24MHz 外部晶振直连条件下的 TIM14 1ms 基准（Prescaler 调整为 23），避免模式时序/防抖时间整体放大；补充旧同步模块历史保留注释，并将蓝线(HORN)爆闪改为独立 50ms 亮/50ms 灭逻辑；同步固化“右键首次从 OFF 拉起到模式4”的行为说明。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/01-功能说明书.md`、`CHANGELOG_INDEX.md` |
 | v2.10.28-RxWireDebounceHiDblGate | 2026-04-04 | RX 三线输入新增统一防抖（ACC/黄线/喇叭，默认 20ms），并落地“黄线首次双触发解锁”机制（窗口内两次稳定边沿后才生效）；同时同步更新《功能说明书》参数为代码现状并新增“旧值 vs 新值”对照表，便于联调与回溯。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`docs/01-功能说明书.md`、`CHANGELOG_INDEX.md` |
 | v2.10.27-CfgPolarityLpTune | 2026-04-04 | 启动配置横幅 `[CFG]` 新增 `rx_polarity` 打印并固化 `horn_pending/improv` 状态标识，避免烧录后极性与仲裁策略遗忘；同时微调 TX 低功耗窗口（唤醒保护 0.8s、按键保持 1.1s）以平衡手感与待机电流。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`CHANGELOG_INDEX.md` |

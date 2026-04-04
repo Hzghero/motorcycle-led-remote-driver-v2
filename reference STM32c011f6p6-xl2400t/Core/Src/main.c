@@ -2336,7 +2336,7 @@ static void Light_Tick(uint32_t now)
   /* 对齐说明书参数（统一从宏读取，便于快速调参） */
   const uint16_t fast_ms = FX4_FLASH_HALF_PERIOD_MS;    /* mode4 */
   const uint16_t alt_ms  = FX5_ALT_HALF_PERIOD_MS;      /* mode5 */
-  const uint16_t wheel_ms = FX7_WHEEL_HALF_PERIOD_MS;   /* mode7 */
+  const uint16_t wheel_ms = FX7_WHEEL_HALF_PERIOD_MS;   /* mode7（旧参数保留，不再用于输出节拍） */
   const uint16_t breath_ms = FX6_BREATH_PERIOD_MS;      /* mode6 */
 
   uint8_t mask = 0U;
@@ -2402,15 +2402,29 @@ static void Light_Tick(uint32_t now)
       break;
     }
 
-    case 7: /* 远光左右轮闪 */
+    case 7: /* 远光左右轮闪（双脉冲）：L(100亮130灭100亮330灭) -> R(100亮130灭100亮330灭) */
     {
-      uint16_t phase = GetPhase1ms((uint16_t)(wheel_ms * 2U));
-      if (phase < wheel_ms) {
-        mask = CH_L_HI_MASK;
+      uint16_t phase = GetPhase1ms(1320U);
+      if (phase < 660U) {
+        /* 左组阶段 */
+        if ((phase < 100U) || ((phase >= 230U) && (phase < 330U))) {
+          mask = CH_L_HI_MASK;
+          pulse = base;
+        } else {
+          mask = 0U;
+          pulse = 0U;
+        }
       } else {
-        mask = CH_R_HI_MASK;
+        /* 右组阶段 */
+        uint16_t rphase = (uint16_t)(phase - 660U);
+        if ((rphase < 100U) || ((rphase >= 230U) && (rphase < 330U))) {
+          mask = CH_R_HI_MASK;
+          pulse = base;
+        } else {
+          mask = 0U;
+          pulse = 0U;
+        }
       }
-      pulse = base;
       break;
     }
 
