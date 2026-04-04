@@ -69,12 +69,12 @@
 /* RX 三线输入极性切换：
  * - NORMAL: 高电平有效（保持当前行为）
  * - INVERTED: 低电平有效（整体反向） */
-#define RX_WIRE_ACTIVE_POLARITY_NORMAL    1U
-#define RX_WIRE_ACTIVE_POLARITY_INVERTED  0U
-#define RX_WIRE_ACTIVE_POLARITY           RX_WIRE_ACTIVE_POLARITY_NORMAL
+#define RX_WIRE_ACTIVE_POLARITY_NORMAL    0U
+#define RX_WIRE_ACTIVE_POLARITY_INVERTED  1U
+#define RX_WIRE_ACTIVE_POLARITY           RX_WIRE_ACTIVE_POLARITY_INVERTED 
 
 /* 三线防抖时间（单位ms） */
-#define RX_WIRE_DEBOUNCE_MS               20U
+#define RX_WIRE_DEBOUNCE_MS               50U
 
 /* 黄线首次生效门限：首次需“双击”后才放开黄线控制（单位ms） */
 #define RX_HI_FIRST_DBL_MS                600U
@@ -98,12 +98,15 @@
 #define RF_TX_CHANNEL               76U /* XL2400T TX 频道 76 (2476 MHz) */
 #define RF_RX_CHANNEL               75U /* XL2400T RX 频道 75 (2475 MHz) */
 
-/* [D] 同步/时序协议参数 */
-#define SYNC_CYCLE_MS               900U    /* 同步周期 900ms */
-#define SYNC_LED_ON_MS              100U    /* LED 亮灯时间 100ms */
-#define SYNC_TX_TIME_MS             450U    /* TX 发送时间：所有节点固定 450ms */
-#define SYNC_TX_DELAY_MS            6U      /* 传输延迟补偿 */
-#define SYNC_PKT_SIZE               4U      /* AA 55 + 2字节相位 */
+/* [D] 旧同步/时序协议参数（历史保留）
+ * 说明：以下 SYNC_* 为旧“太阳能同步闪灯”模块遗留参数。
+ * 当前三键遥控 + RX三线仲裁主流程不依赖该模块，保留仅用于历史回溯与对比调试。
+ * 如后续确认不再需要，再整体移除该模块（函数+宏）而不是只删单个宏。 */
+#define SYNC_CYCLE_MS               900U    /* 旧同步周期 900ms */
+#define SYNC_LED_ON_MS              100U    /* 旧同步LED亮灯时间 100ms */
+#define SYNC_TX_TIME_MS             450U    /* 旧同步TX发送时间：所有节点固定 450ms */
+#define SYNC_TX_DELAY_MS            6U      /* 旧同步传输延迟补偿 */
+#define SYNC_PKT_SIZE               4U      /* 旧同步包：AA 55 + 2字节相位 */
 
 /* 仅允许启用一个角色 */
 #if (APP_ROLE_RX_ONLY + APP_ROLE_TX_ONLY) != 1
@@ -196,9 +199,12 @@
  * - 呼吸总周期(ms) = 从暗到亮再到暗的完整时间
  */
 #define FX4_FLASH_HALF_PERIOD_MS     100U   /* 模式4：双远光同步闪 半周期，默认 2Hz */
-#define FX5_ALT_HALF_PERIOD_MS       200U   /* 模式5：左右交替闪 半周期，默认 1Hz 交替 */
+#define FX5_ALT_HALF_PERIOD_MS       260U   /* 模式5：左右交替闪 半周期，留意这里通过修改定时器时间基解决了。 */
 #define FX6_BREATH_PERIOD_MS        4000U   /* 模式6：呼吸灯总周期，默认 2s */
 #define FX7_WHEEL_HALF_PERIOD_MS     100U   /* 模式7：左右轮闪 半周期，默认 2Hz 轮闪 */
+
+/* 蓝线(HORN)独立爆闪参数（不复用右键模式链） */
+#define HORN_FLASH_HALF_PERIOD_MS     50U   /* 50ms亮 / 50ms灭 */
 
 #define DEBUG_ADC_VERBOSE  0   /* 调试：1=打印 ADC 采样值，完成后可改为 0 精简 */
 #define DEBUG_SYNC_VERBOSE 1   /* 调试：1=打印详细同步信息，0=只打印关键事件 */
@@ -340,13 +346,14 @@ static TxKeyState_t g_txk_l = {0};
 static TxKeyState_t g_txk_m = {0};
 static TxKeyState_t g_txk_r = {0};
 
-/* TX 业务态（按功能说明书语义） */
-static uint8_t g_tx_mode = TLIGHT_MODE_MIN;
+/* TX 业务态（按功能说明书语义）
+ * 上电默认 OFF：确保首次右键单击走“OFF->特效1(模式4)”入口。 */
+static uint8_t g_tx_mode = TLIGHT_MODE_OFF;
 static uint8_t g_tx_bright = TLIGHT_BRIGHT_30;
 static uint8_t g_tx_basic_mode = TLIGHT_MODE_MIN;  /* 1..3 */
 static uint8_t g_tx_effect_mode = 4U;              /* 4..7 */
 static uint8_t g_tx_in_effect = 0U;
-static uint8_t g_tx_is_off = 0U;
+static uint8_t g_tx_is_off = 1U;
 static uint8_t g_tx_left_all_on_armed = 0U;
 static uint8_t g_tx_need_send = 0U;
 static uint8_t g_tx_burst_left = 0U;
@@ -1481,7 +1488,9 @@ static void MX_TIM14_Init(void)
 
   /* USER CODE END TIM14_Init 1 */
   htim14.Instance = TIM14;
-  htim14.Init.Prescaler = 47;
+  /* 24MHz 外部晶振直连（无PLL）下，TIM14 基准修正为 1ms：
+   * 24MHz / (23+1) = 1MHz；1MHz / (999+1) = 1kHz => 1ms tick */
+  htim14.Init.Prescaler = 23;
   htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim14.Init.Period = 999;
   htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1592,15 +1601,25 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 #else
-  /* RX 角色：复用三键IO作为车辆输入（ACC/远光/喇叭），采用普通输入轮询 */
+  /* RX 角色：复用三键IO作为车辆输入（ACC/远光/喇叭），采用普通输入轮询
+   * - NORMAL 极性：PULLDOWN
+   * - INVERTED 极性：PULLUP */
   GPIO_InitStruct.Pin = L_KEY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+#else
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+#endif
   HAL_GPIO_Init(L_KEY_GPIO_Port, &GPIO_InitStruct);
 
   GPIO_InitStruct.Pin = M_KEY_Pin|R_KEY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+#else
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+#endif
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 #endif
 
@@ -1809,7 +1828,7 @@ static void RxWireInput_Poll(uint32_t now)
     g_rx_remote_pending_valid = 0U;
 
     g_rx_horn_active = 1U;
-    g_light_mode = 4U; /* 映射到模式4 */
+    g_light_mode = 4U; /* 仅作状态兼容标记；实际爆闪由 HORN 独立 50/50ms 逻辑驱动 */
     g_light_bright = TLIGHT_BRIGHT_100;
   }
   if ((horn == 0U) && (g_rx_horn_last != 0U)) {
@@ -2322,6 +2341,18 @@ static void Light_Tick(uint32_t now)
 
   uint8_t mask = 0U;
   uint16_t pulse = 0U;
+
+#if APP_ROLE_RX_ONLY
+  /* 蓝线(HORN)独立爆闪：固定 50ms 亮 / 50ms 灭，不复用右键模式语义 */
+  if (g_rx_horn_active != 0U) {
+    uint16_t phase = GetPhase1ms((uint16_t)(HORN_FLASH_HALF_PERIOD_MS * 2U));
+    mask = (uint8_t)(CH_L_HI_MASK | CH_R_HI_MASK);
+    pulse = (phase < HORN_FLASH_HALF_PERIOD_MS) ? base : 0U;
+    Channel_ApplyMask(mask);
+    PwmGlobal_Set(pulse);
+    return;
+  }
+#endif
 
   (void)now;
 

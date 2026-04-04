@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.28-RxWireDebounceHiDblGate"
+#define FW_VERSION "v2.10.29-24MHzTimebaseFix"
 
 /* USER CODE END EC */
 
