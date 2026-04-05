@@ -148,6 +148,10 @@
 #define TLIGHT_TRIG_DOUBLE        2U
 #define TLIGHT_TRIG_LONG          3U
 
+/* 对码专用包标记（方案1）：仅在 TX 进入对码模式时发送；RX 对码窗口内仅接受该标记触发配对。 */
+#define TLIGHT_PAIR_KEY_MARK      TLIGHT_KEY_NONE
+#define TLIGHT_PAIR_TRIG_MARK     TLIGHT_TRIG_LONG
+
 /* P1：设备ID（单向链路唯一性）
  * - TX 发送自己的设备ID
  * - RX 仅接收与本机已配对ID一致的数据包
@@ -188,6 +192,7 @@
  * - 按键活动保持：检测到任一按键按下后，再保持一段时间活跃，避免短按被切碎 */
 #define TX_LP_WAKE_GUARD_MS           800U /* 微调：唤醒后保持0.8s活跃，兼顾首击手感与待机电流 */
 #define TX_LP_KEY_ACTIVE_HOLD_MS     1100U /* 微调：按键活动保持1.1s，覆盖双击/长按又减少常亮耗电 */
+#define TX_STUCK_KEY_FORCE_SLEEP_MS 10000U /* 卡键保护：任一键持续按下10s后强制进低功耗 */
 
 /* 简化可见指示（用 LED_Pin，不做真实 LM3409 PWM 还原） */
 #define LED_FLASH_PERIOD_MS  250U   /* 闪烁周期 */
@@ -225,6 +230,12 @@
 #define KEY_ACTIVE_LEVEL        GPIO_PIN_SET
 #define KEY_DEBOUNCE_MS         20U
 #define KEY_LONG_MS             2000U
+#define KEY_COMBO_SIMULT_MS     150U   /* L/R 组合键“同时按下”窗口：超窗按单键处理 */
+
+/* RX 对码结果反馈（通过近光灯） */
+#define RX_PAIR_SUCCESS_HOLD_MS       1000U
+#define RX_PAIR_FAIL_FLASH_HALF_MS    120U
+#define RX_PAIR_FAIL_FLASH_TOGGLE_CNT 6U
 
 /* TX 三键熄灯/点亮规则（v0.3.3） */
 #define KEY_TX_LONG_MS          1000U
@@ -308,6 +319,13 @@ static uint8_t  g_pair_stable = 0U;
 static uint8_t  g_pair_long_done = 0U;
 static uint32_t g_pair_raw_change_tick = 0;
 static uint32_t g_pair_press_start_tick = 0;
+static uint32_t g_pair_l_down_tick = 0U;
+static uint32_t g_pair_r_down_tick = 0U;
+static uint8_t  g_pair_combo_armed = 0U;
+static uint8_t  g_pair_guard_log_state = 0U;
+
+static uint32_t g_tx_anykey_down_tick = 0U;
+static uint8_t  g_tx_force_sleep_latched = 0U;
 
 /* 正式对码流程状态 */
 static uint8_t  g_pairing_mode = 0U;
@@ -320,9 +338,19 @@ typedef enum {
   PAIR_FB_FAIL
 } PairFeedbackState_t;
 
+typedef enum {
+  RX_PAIR_FB_NONE = 0,
+  RX_PAIR_FB_SUCCESS_HOLD,
+  RX_PAIR_FB_FAIL_FLASH
+} RxPairFeedbackState_t;
+
 static PairFeedbackState_t g_pair_fb_state = PAIR_FB_NONE;
 static uint32_t g_pair_fb_tick = 0U;
 static uint8_t g_pair_fb_step = 0U;
+
+static RxPairFeedbackState_t g_rx_pair_fb_state = RX_PAIR_FB_NONE;
+static uint32_t g_rx_pair_fb_tick = 0U;
+static uint8_t g_rx_pair_fb_step = 0U;
 
 /* TX 三键事件（由按键状态机在主循环生成） */
 static volatile uint8_t g_tx_evt_l = 0U;
@@ -680,6 +708,7 @@ static void KeyPairing_Poll(uint32_t now)
   if ((g_pairing_mode != 0U) && ((now - g_pairing_enter_tick) >= PAIRING_MODE_TIMEOUT_MS)) {
     g_pairing_mode = 0U;
     g_pairing_enter_tick = 0U;
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
     DebugPrint("[PAIR] timeout\r\n");
 #if APP_ROLE_TX_ONLY
     /* TX 对码超时指示：长亮 500ms（反馈期间独占 LED） */
@@ -688,6 +717,32 @@ static void KeyPairing_Poll(uint32_t now)
   }
 
 #if APP_ROLE_TX_ONLY
+  /* 记录 L/R 各自按下时刻，用于“同时按下窗口”判定 */
+  if ((l_raw != 0U) && (g_pair_l_down_tick == 0U)) {
+    g_pair_l_down_tick = now;
+  }
+  if ((l_raw == 0U) && (g_pair_l_down_tick != 0U)) {
+    g_pair_l_down_tick = 0U;
+  }
+
+  if ((r_raw != 0U) && (g_pair_r_down_tick == 0U)) {
+    g_pair_r_down_tick = now;
+  }
+  if ((r_raw == 0U) && (g_pair_r_down_tick != 0U)) {
+    g_pair_r_down_tick = 0U;
+  }
+
+  if ((l_raw != 0U) && (r_raw != 0U) && (g_pair_l_down_tick != 0U) && (g_pair_r_down_tick != 0U)) {
+    uint32_t dt = (g_pair_l_down_tick >= g_pair_r_down_tick) ?
+                  (g_pair_l_down_tick - g_pair_r_down_tick) :
+                  (g_pair_r_down_tick - g_pair_l_down_tick);
+    g_pair_combo_armed = (dt <= KEY_COMBO_SIMULT_MS) ? 1U : 0U;
+  } else {
+    g_pair_combo_armed = 0U;
+  }
+
+  raw = ((l_raw != 0U) && (r_raw != 0U) && (g_pair_combo_armed != 0U)) ? 1U : 0U;
+
   if ((g_pairing_mode == 0U) && (raw == 0U)) {
     return;
   }
@@ -730,6 +785,15 @@ static void KeyPairing_Poll(uint32_t now)
       g_pairing_mode = 1U;
       g_pairing_enter_tick = now;
       g_pair_led_tick = now;
+
+      /* 进入对码时清空三键状态，避免“进入前已累计的单/双/长按事件”在后续被误执行。 */
+      memset(&g_txk_l, 0, sizeof(g_txk_l));
+      memset(&g_txk_m, 0, sizeof(g_txk_m));
+      memset(&g_txk_r, 0, sizeof(g_txk_r));
+      g_tx_evt_l = 0U;
+      g_tx_evt_m = 0U;
+      g_tx_evt_r = 0U;
+
       DebugPrint("[PAIR] enter (tx)\r\n");
       g_pair_long_done = 1U;
       g_tx_need_send = 1U;
@@ -981,7 +1045,7 @@ int main(void)
   g_rf_sleeping = 0;
 
 #if APP_ROLE_RX_ONLY
-  /* 按说明书对齐：RX 上电后自动进入 5 秒对码窗口（无需按键） */
+  /* RX 上电后自动进入 5 秒对码窗口（保持旧版行为）。 */
   g_pairing_mode = 1U;
   g_pairing_enter_tick = HAL_GetTick();
   DebugPrint("[PAIR] auto enter (rx, 5s window)\r\n");
@@ -1073,7 +1137,17 @@ int main(void)
           if ((now - g_tx_last_send_tick) >= tx_itv) {
             g_tx_last_send_tick = now;
 
-            BuildTempLightPacket(RF_TX_Buf, g_tx_mode, g_tx_bright, g_tx_last_key, g_tx_last_trig);
+            {
+              uint8_t tx_key = g_tx_last_key;
+              uint8_t tx_trig = g_tx_last_trig;
+
+              if (g_pairing_mode != 0U) {
+                tx_key = TLIGHT_PAIR_KEY_MARK;
+                tx_trig = TLIGHT_PAIR_TRIG_MARK;
+              }
+
+              BuildTempLightPacket(RF_TX_Buf, g_tx_mode, g_tx_bright, tx_key, tx_trig);
+            }
             if (RF_Link_Send(RF_TX_Buf, RF_PACKET_SIZE) == 0) {
               g_link_tx_ok++;
             } else {
@@ -1140,7 +1214,7 @@ int main(void)
         uint8_t mode = 0;
         uint8_t bright = 0;
 
-        /* 正式对码流程：进入对码模式后，捕获首个合法包中的 device_id 并持久化 */
+        /* 正式对码流程：进入对码模式后，仅接受“对码专用标记包”触发配对。 */
         if (g_pairing_mode != 0U) {
           if ((RF_RX_Buf[0] == TLIGHT_PKT_HEADER0) &&
               (RF_RX_Buf[1] == TLIGHT_PKT_HEADER1) &&
@@ -1148,18 +1222,35 @@ int main(void)
               (RF_RX_Buf[TLIGHT_PKT_CHKSUM_IDX] == TempLight_CalcChecksum(RF_RX_Buf)) &&
               (RF_RX_Buf[2] >= TLIGHT_MODE_OFF) && (RF_RX_Buf[2] <= TLIGHT_MODE_MAX) &&
               (RF_RX_Buf[3] <= TLIGHT_BRIGHT_100)) {
-            uint16_t new_pair_id = (uint16_t)((RF_RX_Buf[TLIGHT_PKT_DEV_ID_H_IDX] << 8) | RF_RX_Buf[TLIGHT_PKT_DEV_ID_L_IDX]);
-            if (new_pair_id != TLIGHT_DEVICE_ID_INVALID) {
-              if (DevId_SaveToFlash(g_dev_id_local, new_pair_id)) {
-                g_pairing_mode = 0U;
-                g_pairing_enter_tick = 0U;
-                DebugPrint("[PAIR] success id=");
-                DebugPrintHex((const uint8_t *)&new_pair_id, 2);
-                DebugPrint("\r\n");
-                PairingLed_Feedback(1U);
-              } else {
-                DebugPrint("[PAIR-ERR] flash save fail\r\n");
-                PairingLed_Feedback(0U);
+            uint8_t key_raw = (uint8_t)((RF_RX_Buf[TLIGHT_PKT_KEYTRIG_IDX] >> 6) & 0x03U);
+            uint8_t trig_raw = (uint8_t)((RF_RX_Buf[TLIGHT_PKT_KEYTRIG_IDX] >> 4) & 0x03U);
+
+            if ((key_raw == TLIGHT_PAIR_KEY_MARK) && (trig_raw == TLIGHT_PAIR_TRIG_MARK)) {
+              uint16_t new_pair_id = (uint16_t)((RF_RX_Buf[TLIGHT_PKT_DEV_ID_H_IDX] << 8) | RF_RX_Buf[TLIGHT_PKT_DEV_ID_L_IDX]);
+              if (new_pair_id != TLIGHT_DEVICE_ID_INVALID) {
+                /* 窗口内收到“当前已配对遥控器”的对码标记包：退出窗口，回归正常业务。 */
+                if (new_pair_id == g_dev_id_paired) {
+                  g_pairing_mode = 0U;
+                  g_pairing_enter_tick = 0U;
+                  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+                  DebugPrint("[PAIR] matched known id, resume normal\r\n");
+                } else if (DevId_SaveToFlash(g_dev_id_local, new_pair_id)) {
+                  g_pairing_mode = 0U;
+                  g_pairing_enter_tick = 0U;
+                  DebugPrint("[PAIR] success id=");
+                  DebugPrintHex((const uint8_t *)&new_pair_id, 2);
+                  DebugPrint("\r\n");
+                  PairingLed_Feedback(1U);
+                  g_rx_pair_fb_state = RX_PAIR_FB_SUCCESS_HOLD;
+                  g_rx_pair_fb_tick = now;
+                  g_rx_pair_fb_step = 0U;
+                } else {
+                  DebugPrint("[PAIR-ERR] flash save fail\r\n");
+                  PairingLed_Feedback(0U);
+                  g_rx_pair_fb_state = RX_PAIR_FB_FAIL_FLASH;
+                  g_rx_pair_fb_tick = now;
+                  g_rx_pair_fb_step = 0U;
+                }
               }
             }
           }
@@ -1198,8 +1289,11 @@ int main(void)
           /* P4 遥控命令融合规则：
            * - ACC=0：忽略遥控输出变更；
            * - HORN激活：缓存为pending，待喇叭释放后优先恢复；
+           * - 对码反馈独占窗口：仅统计链路，不立刻改灯态；
            * - 其余情况：立即应用遥控灯态。 */
-          if (g_rx_acc_last == 0U) {
+          if (g_rx_pair_fb_state != RX_PAIR_FB_NONE) {
+            /* 对码反馈期间：冻结业务灯态应用，避免覆盖成功/失败反馈。 */
+          } else if (g_rx_acc_last == 0U) {
             /* ACC 关闭，遥控不改当前输出 */
           } else if (g_rx_horn_active != 0U) {
             g_rx_remote_pending_valid = 1U;
@@ -1306,15 +1400,41 @@ int main(void)
         uint8_t m_now = TxKey_ReadRaw(M_KEY_Pin, M_KEY_GPIO_Port);
         uint8_t r_now = TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port);
 
-        /* 核心策略：只要任一键仍处于按下态，就绝不进入低功耗。
-         * 这样长按过程中不会被 STOP 打断。 */
+        /* 卡键保护：任一键连续按下超过阈值后，强制进低功耗直到全部释放。 */
         if ((l_now != 0U) || (m_now != 0U) || (r_now != 0U)) {
-          tx_busy = 1U;
-          g_tx_key_active_until_tick = now + TX_LP_KEY_ACTIVE_HOLD_MS;
+          if (g_tx_anykey_down_tick == 0U) {
+            g_tx_anykey_down_tick = now;
+          }
+
+          if ((now - g_tx_anykey_down_tick) >= TX_STUCK_KEY_FORCE_SLEEP_MS) {
+            if (g_tx_force_sleep_latched == 0U) {
+              g_tx_force_sleep_latched = 1U;
+              DebugPrint("[TX-LP] force_sleep_by_stuck_key\r\n");
+            }
+          }
+        } else {
+          if (g_tx_anykey_down_tick != 0U) {
+            /* 全部按键释放边沿：只在这一刻刷新一次活动保持窗口。 */
+            g_tx_key_active_until_tick = now + TX_LP_KEY_ACTIVE_HOLD_MS;
+          }
+          g_tx_anykey_down_tick = 0U;
+          if (g_tx_force_sleep_latched != 0U) {
+            g_tx_force_sleep_latched = 0U;
+            g_tx_lp_wake_tick = now;
+            DebugPrint("[TX-LP] stuck_key_released\r\n");
+          }
         }
 
-        if ((int32_t)(g_tx_key_active_until_tick - now) > 0) {
-          tx_busy = 1U;
+        if (g_tx_force_sleep_latched == 0U) {
+          /* 正常策略：按键活动期间保持活跃，防止漏按。 */
+          if ((l_now != 0U) || (m_now != 0U) || (r_now != 0U)) {
+            tx_busy = 1U;
+            g_tx_key_active_until_tick = now + TX_LP_KEY_ACTIVE_HOLD_MS;
+          }
+
+          if ((int32_t)(g_tx_key_active_until_tick - now) > 0) {
+            tx_busy = 1U;
+          }
         }
       }
 
@@ -2151,6 +2271,32 @@ static void TxKeys_Process(uint32_t now, uint8_t tick_1ms)
 #if APP_ROLE_TX_ONLY
   uint8_t changed = 0U;
   uint8_t s = 0U, d = 0U, l = 0U;
+  uint8_t l_raw_now = (HAL_GPIO_ReadPin(L_KEY_GPIO_Port, L_KEY_Pin) == KEY_ACTIVE_LEVEL) ? 1U : 0U;
+  uint8_t r_raw_now = (HAL_GPIO_ReadPin(R_KEY_GPIO_Port, R_KEY_Pin) == KEY_ACTIVE_LEVEL) ? 1U : 0U;
+
+  /* L+R 组合键对码候选/对码中：屏蔽单键业务识别，避免先触发业务再进入对码。
+   * 仅在“当前物理上仍同时按下且组合窗口有效”时屏蔽，避免组合键抬起后因状态滞留导致业务假死。 */
+  {
+    uint8_t guard_on = 0U;
+    if (g_pairing_mode != 0U) {
+      guard_on = 1U;
+    } else if ((l_raw_now != 0U) && (r_raw_now != 0U) && (g_pair_combo_armed != 0U) && (g_pair_long_done == 0U)) {
+      guard_on = 1U;
+    }
+
+    if (guard_on != g_pair_guard_log_state) {
+      g_pair_guard_log_state = guard_on;
+      if (guard_on != 0U) {
+        DebugPrint("[PAIR-GUARD] on\r\n");
+      } else {
+        DebugPrint("[PAIR-GUARD] off\r\n");
+      }
+    }
+
+    if (guard_on != 0U) {
+      return;
+    }
+  }
 
 #if TX_KEY_R_DEBUG_ONLY
   (void)TxKey_Update(&g_txk_r, TxKey_ReadRaw(R_KEY_Pin, R_KEY_GPIO_Port), now, tick_1ms, &s, &d, &l);
@@ -2350,6 +2496,37 @@ static void Light_Tick(uint32_t now)
     pulse = (phase < HORN_FLASH_HALF_PERIOD_MS) ? base : 0U;
     Channel_ApplyMask(mask);
     PwmGlobal_Set(pulse);
+    return;
+  }
+
+  /* RX 对码结果反馈：仅短时覆盖近光输出，结束后自动回归原业务态。 */
+  if (g_rx_pair_fb_state == RX_PAIR_FB_SUCCESS_HOLD) {
+    mask = (uint8_t)(CH_L_LO_MASK | CH_R_LO_MASK);
+    pulse = base;
+    Channel_ApplyMask(mask);
+    PwmGlobal_Set(pulse);
+    if ((now - g_rx_pair_fb_tick) >= RX_PAIR_SUCCESS_HOLD_MS) {
+      g_rx_pair_fb_state = RX_PAIR_FB_NONE;
+      g_rx_pair_fb_step = 0U;
+    }
+    return;
+  }
+
+  if (g_rx_pair_fb_state == RX_PAIR_FB_FAIL_FLASH) {
+    uint8_t on_phase = (uint8_t)((g_rx_pair_fb_step & 0x01U) == 0U);
+    mask = (uint8_t)(CH_L_LO_MASK | CH_R_LO_MASK);
+    pulse = (on_phase != 0U) ? base : 0U;
+    Channel_ApplyMask(mask);
+    PwmGlobal_Set(pulse);
+
+    if ((now - g_rx_pair_fb_tick) >= RX_PAIR_FAIL_FLASH_HALF_MS) {
+      g_rx_pair_fb_tick = now;
+      g_rx_pair_fb_step++;
+      if (g_rx_pair_fb_step >= RX_PAIR_FAIL_FLASH_TOGGLE_CNT) {
+        g_rx_pair_fb_state = RX_PAIR_FB_NONE;
+        g_rx_pair_fb_step = 0U;
+      }
+    }
     return;
   }
 #endif

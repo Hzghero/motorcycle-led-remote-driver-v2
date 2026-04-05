@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.30-Mode7DoublePulse"
+#define FW_VERSION "v2.10.34-TxLowPowerBusyFix"
 
 /* USER CODE END EC */
 
