@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.34-TxLowPowerBusyFix"
+#define FW_VERSION "v2.10.47-TxSaveCounterTuning"
 
 /* USER CODE END EC */
 

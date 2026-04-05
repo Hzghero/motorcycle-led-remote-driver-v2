@@ -54,8 +54,8 @@
  * - 正常发射端固件：APP_RF_LINK_TEST=0, APP_ROLE_TX_ONLY=1, APP_ROLE_RX_ONLY=0
  * - 正常接收端固件：APP_RF_LINK_TEST=0, APP_ROLE_TX_ONLY=0, APP_ROLE_RX_ONLY=1 */
 #define APP_RF_LINK_TEST            1U  /* 1=开启链路诊断附加打印，0=关闭附加打印（不影响业务主流程） */
-#define APP_ROLE_RX_ONLY            1U  /* 1=接收端固件 */
-#define APP_ROLE_TX_ONLY            0U  /* 1=发射端固件 */
+#define APP_ROLE_RX_ONLY            0U  /* 1=接收端固件 */
+#define APP_ROLE_TX_ONLY            1U  /* 1=发射端固件 */
 
 /* [A-2] RX 三线输入复用映射（仅 RX 角色生效）
  * 说明：同一工程内复用 TX 三键 IO 口给 RX 车辆输入，靠角色宏区分避免冲突。 */
@@ -90,7 +90,8 @@
 /* [B] 低功耗与诊断 */
 #define TX_LOWPOWER_MODE_SLEEP      0U
 #define TX_LOWPOWER_MODE_STOP       1U
-#define TX_LOWPOWER_MODE            TX_LOWPOWER_MODE_STOP /* TX低功耗模式：SLEEP/STOP */
+#define TX_LOWPOWER_MODE_STANDBY    2U
+#define TX_LOWPOWER_MODE            TX_LOWPOWER_MODE_STANDBY /* TX低功耗模式：SLEEP/STOP/STANDBY（当前测试STANDBY） */
 #define LOWPOWER_DIAG_ENABLE        1U  /* 1=低功耗诊断打印，0=关闭诊断打印 */
 
 /* [C] RF 基本参数
@@ -166,7 +167,7 @@
  * 说明：这是“对码流程骨架”实现。量产时建议在链接脚本明确预留参数页，避免与程序区冲突。 */
 #define DEVCFG_MAGIC0              0xD1U
 #define DEVCFG_MAGIC1              0xA5U
-#define DEVCFG_VERSION             0x01U
+#define DEVCFG_VERSION             0x03U
 #define DEVCFG_FLASH_ADDR          (FLASH_BASE + FLASH_SIZE - FLASH_PAGE_SIZE)
 #define DEVCFG_FLASH_PAGE          (FLASH_PAGE_NB - 1U)
 
@@ -179,20 +180,52 @@
 
 /* TX 低功耗策略已在“宏配置总区 [B]”集中定义 */
 
-/* TX 发包策略：按键事件触发短突发；对码窗口内才周期发 */
-#define LINK_TX_EVENT_BURST_COUNT    4U
+/* TX 发包策略：按键事件触发短突发；对码窗口内才周期发
+ * 可靠性调优（STANDBY 场景）：
+ * - 事件突发帧数增加到 8，提升“至少命中一帧”概率
+ * - 保持 40ms 帧间隔，降低对原时序与空口占用的冲击
+ * - 新增事件后活跃保持窗口，避免“刚发完就回睡”导致 RX 偶发漏收 */
+#define LINK_TX_EVENT_BURST_COUNT    8U
 #define LINK_TX_BURST_INTERVAL_MS    40U
 #define LINK_TX_PAIRING_INTERVAL_MS  120U
 #define RF_TX_WAKEUP_SETTLE_MS       2U
 #define RF_TX_BOOT_WARM_MS           1500U
 #define LINK_TX_BOOT_BURST_COUNT     6U
+#define TX_POST_EVENT_HOLD_MS        400U
 
 /* TX 低功耗抗漏按参数（方向A）：
  * - 唤醒保护窗口：唤醒后至少保持一段时间不回睡，给按键去抖/识别留时间
  * - 按键活动保持：检测到任一按键按下后，再保持一段时间活跃，避免短按被切碎 */
-#define TX_LP_WAKE_GUARD_MS           800U /* 微调：唤醒后保持0.8s活跃，兼顾首击手感与待机电流 */
+#define TX_LP_WAKE_GUARD_MS          3000U /* 折中增强：唤醒后至少保持3s活跃，降低快速回睡与频繁Flash写入 */
 #define TX_LP_KEY_ACTIVE_HOLD_MS     1100U /* 微调：按键活动保持1.1s，覆盖双击/长按又减少常亮耗电 */
 #define TX_STUCK_KEY_FORCE_SLEEP_MS 10000U /* 卡键保护：任一键持续按下10s后强制进低功耗 */
+
+/* ===================== TX 状态持久化宏配置表（量产可调） =====================
+ * 使用说明（仅改这里即可完成车型调参）：
+ * 1) TX_PERSIST_ENABLE
+ *    - 1：启用状态持久化（推荐量产）
+ *    - 0：关闭持久化（仅临时调试）
+ *
+ * 2) TX_STATE_SAVE_DEFER_MS（延迟合并）
+ *    - 状态变化后，至少静默这么久再尝试保存
+ *    - 值越大，写入越少；但掉电时丢“最新瞬态”的概率略升
+ *
+ * 3) TX_STATE_SAVE_MIN_INTERVAL_MS（最小写间隔）
+ *    - 仅限制“后台延迟提交”的频率
+ *    - 不限制“进 STANDBY 前兜底提交”（兜底优先，防止丢最终状态）
+ *
+ * 4) TX_STATE_SAVE_FORCE_BEFORE_STANDBY
+ *    - 1：进入 STANDBY 前若 dirty 则强制保存一次（推荐）
+ *    - 0：不兜底，寿命更优但有丢最终状态风险
+ *
+ * 5) TX_STATE_SAVE_COUNTER_LOG_ENABLE
+ *    - 1：上电打印累计写入计数，便于寿命评估
+ *    - 0：关闭该日志 */
+#define TX_PERSIST_ENABLE                    1U
+#define TX_STATE_SAVE_DEFER_MS            2000U
+#define TX_STATE_SAVE_MIN_INTERVAL_MS    30000U
+#define TX_STATE_SAVE_FORCE_BEFORE_STANDBY  1U
+#define TX_STATE_SAVE_COUNTER_LOG_ENABLE     1U
 
 /* 简化可见指示（用 LED_Pin，不做真实 LM3409 PWM 还原） */
 #define LED_FLASH_PERIOD_MS  250U   /* 闪烁周期 */
@@ -282,8 +315,18 @@ static uint8_t  g_rf_sleeping = 0;
 static uint32_t g_adc_display_tick = 0;  /* ADC显示计时器 */
 static uint32_t g_lp_enter_cnt = 0U;     /* 低功耗进入计数（诊断） */
 static uint32_t g_lp_wake_cnt = 0U;      /* 低功耗唤醒计数（诊断） */
-static uint32_t g_tx_lp_wake_tick = 0U;  /* TX 低功耗唤醒时刻，用于唤醒保护窗口 */
+static uint32_t g_tx_lp_wake_tick = 0U;  /* TX 低功耗唤醒时刻+1（0=未生效），用于唤醒保护窗口 */
 static uint32_t g_tx_key_active_until_tick = 0U; /* TX 按键活动保持截止时刻 */
+static uint8_t  g_boot_lp_wufi = 0U;      /* 本次启动早期捕获的 WUFI 标志 */
+static uint8_t  g_boot_lp_wuf1 = 0U;      /* 本次启动早期捕获的 WUF1 标志 */
+static uint8_t  g_boot_lp_wuf2 = 0U;      /* 本次启动早期捕获的 WUF2 标志 */
+static uint8_t  g_boot_lp_sbf = 0U;       /* 本次启动早期捕获的 SBF 标志 */
+static uint8_t  g_tx_boot_wkup1_inject_m_pending = 0U; /* STANDBY 经 WKUP1 唤醒后，补发一次中键单击语义 */
+static uint32_t g_tx_post_event_hold_until_tick = 0U;  /* 事件后活跃保持截止时刻，防止发完即回睡 */
+static uint8_t  g_tx_state_dirty = 0U;                 /* TX 业务状态脏标记：1=待提交到Flash */
+static uint32_t g_tx_state_dirty_since_tick = 0U;      /* 首次变脏时刻，用于延迟合并提交 */
+static uint32_t g_tx_state_last_save_tick = 0U;        /* 最近一次成功提交时刻，用于最小间隔节流 */
+static uint16_t g_tx_state_save_count = 0U;            /* TX 状态累计写入次数（上电日志可见） */
 
 /* 链路调试统计（用于串口观测通信质量） */
 static uint8_t  g_link_tx_seq = 0;
@@ -465,6 +508,9 @@ static uint8_t DevId_CalcCrc8(const uint8_t *buf, uint8_t len);
 static uint16_t DevId_FromUid(void);
 static void DevId_LoadFromFlash(void);
 static uint8_t DevId_SaveToFlash(uint16_t local_id, uint16_t paired_id);
+static uint8_t TxState_SaveToFlash(void);
+static void TxState_MarkDirty(uint32_t now);
+static void TxState_SaveWorker(uint32_t now);
 static void UartCmd_Poll(void);
 static void UartCmd_HandleLine(const char *line);
 static void KeyPairing_Poll(uint32_t now);
@@ -498,9 +544,15 @@ typedef struct {
   uint8_t local_id_h;
   uint8_t paired_id_l;
   uint8_t paired_id_h;
+  uint8_t tx_mode;
+  uint8_t tx_bright;
+  uint8_t tx_flags;   /* bit0: is_off, bit1: in_effect */
+  uint8_t tx_basic_mode;
+  uint8_t tx_effect_mode;
+  uint8_t tx_save_cnt_l; /* 状态持久化累计写入计数（低字节） */
+  uint8_t tx_save_cnt_h; /* 状态持久化累计写入计数（高字节） */
   uint8_t crc8;
   uint8_t tail;
-  uint8_t reserved[7];
 } DevCfg_t;
 
 static uint8_t DevId_CalcCrc8(const uint8_t *buf, uint8_t len)
@@ -528,7 +580,7 @@ static uint16_t DevId_FromUid(void)
 static void DevId_LoadFromFlash(void)
 {
   const DevCfg_t *cfg = (const DevCfg_t *)DEVCFG_FLASH_ADDR;
-  uint8_t calc = DevId_CalcCrc8((const uint8_t *)cfg, 7U);
+  uint8_t calc = DevId_CalcCrc8((const uint8_t *)cfg, 14U);
   uint16_t local_id = (uint16_t)((cfg->local_id_h << 8) | cfg->local_id_l);
   uint16_t paired_id = (uint16_t)((cfg->paired_id_h << 8) | cfg->paired_id_l);
 
@@ -538,15 +590,37 @@ static void DevId_LoadFromFlash(void)
       (cfg->tail == TLIGHT_PKT_TAG_CONST) &&
       (local_id != TLIGHT_DEVICE_ID_INVALID) &&
       (paired_id != TLIGHT_DEVICE_ID_INVALID) &&
+      (cfg->tx_mode <= TLIGHT_MODE_MAX) &&
+      (cfg->tx_bright <= TLIGHT_BRIGHT_100) &&
+      (cfg->tx_basic_mode >= TLIGHT_MODE_MIN) &&
+      (cfg->tx_basic_mode <= 3U) &&
+      (cfg->tx_effect_mode >= 4U) &&
+      (cfg->tx_effect_mode <= TLIGHT_MODE_MAX) &&
       (cfg->crc8 == calc)) {
     g_dev_id_local = local_id;
     g_dev_id_paired = paired_id;
+    g_tx_mode = cfg->tx_mode;
+    g_tx_bright = cfg->tx_bright;
+    g_tx_is_off = (uint8_t)(cfg->tx_flags & 0x01U);
+    g_tx_in_effect = (uint8_t)((cfg->tx_flags >> 1) & 0x01U);
+    g_tx_basic_mode = cfg->tx_basic_mode;
+    g_tx_effect_mode = cfg->tx_effect_mode;
+    g_tx_state_save_count = (uint16_t)((cfg->tx_save_cnt_h << 8) | cfg->tx_save_cnt_l);
+    g_tx_left_all_on_armed = 0U;
     return;
   }
 
   /* Flash 未初始化或损坏：使用 UID 派生默认ID并回写一次 */
   g_dev_id_local = DevId_FromUid();
   g_dev_id_paired = g_dev_id_local;
+  g_tx_mode = TLIGHT_MODE_OFF;
+  g_tx_bright = TLIGHT_BRIGHT_30;
+  g_tx_basic_mode = TLIGHT_MODE_MIN;
+  g_tx_effect_mode = 4U;
+  g_tx_in_effect = 0U;
+  g_tx_is_off = 1U;
+  g_tx_left_all_on_armed = 0U;
+  g_tx_state_save_count = 0U;
   (void)DevId_SaveToFlash(g_dev_id_local, g_dev_id_paired);
 }
 
@@ -570,7 +644,14 @@ static uint8_t DevId_SaveToFlash(uint16_t local_id, uint16_t paired_id)
   cfg.local_id_h = (uint8_t)(local_id >> 8);
   cfg.paired_id_l = (uint8_t)(paired_id & 0xFFU);
   cfg.paired_id_h = (uint8_t)(paired_id >> 8);
-  cfg.crc8 = DevId_CalcCrc8((const uint8_t *)&cfg, 7U);
+  cfg.tx_mode = g_tx_mode;
+  cfg.tx_bright = g_tx_bright;
+  cfg.tx_flags = (uint8_t)((g_tx_is_off & 0x01U) | ((g_tx_in_effect & 0x01U) << 1));
+  cfg.tx_basic_mode = g_tx_basic_mode;
+  cfg.tx_effect_mode = g_tx_effect_mode;
+  cfg.tx_save_cnt_l = (uint8_t)(g_tx_state_save_count & 0xFFU);
+  cfg.tx_save_cnt_h = (uint8_t)(g_tx_state_save_count >> 8);
+  cfg.crc8 = DevId_CalcCrc8((const uint8_t *)&cfg, 14U);
   cfg.tail = TLIGHT_PKT_TAG_CONST;
 
   memcpy(&row0, &cfg, sizeof(row0));
@@ -601,6 +682,73 @@ static uint8_t DevId_SaveToFlash(uint16_t local_id, uint16_t paired_id)
   g_dev_id_local = local_id;
   g_dev_id_paired = paired_id;
   return 1;
+}
+
+/* TX 状态持久化：把当前灯态写入 Flash，供 STANDBY 唤醒后恢复上次业务状态。 */
+static uint8_t TxState_SaveToFlash(void)
+{
+#if APP_ROLE_TX_ONLY
+  if (TX_PERSIST_ENABLE == 0U) {
+    return 1U;
+  }
+
+  if (g_tx_state_save_count != 0xFFFFU) {
+    g_tx_state_save_count++;
+  }
+
+  if (DevId_SaveToFlash(g_dev_id_local, g_dev_id_paired) == 0U) {
+    if (g_tx_state_save_count != 0U) {
+      g_tx_state_save_count--;
+    }
+    DebugPrint("[TX-STATE] flash save fail\r\n");
+    return 0U;
+  }
+  g_tx_state_last_save_tick = HAL_GetTick();
+  return 1U;
+#else
+  return 0U;
+#endif
+}
+
+/* 标记状态变更：由按键业务触发，交给后台节流保存，避免每次按键都写Flash。 */
+static void TxState_MarkDirty(uint32_t now)
+{
+#if APP_ROLE_TX_ONLY
+  if (g_tx_state_dirty == 0U) {
+    g_tx_state_dirty = 1U;
+    g_tx_state_dirty_since_tick = now;
+  }
+#else
+  (void)now;
+#endif
+}
+
+/* TX 状态保存后台任务：
+ * - 先做延迟合并提交（减少写入次数）
+ * - 满足最小间隔后再落盘
+ * - 在进入 STANDBY 前由主流程强制兜底提交（不在这里做） */
+static void TxState_SaveWorker(uint32_t now)
+{
+#if APP_ROLE_TX_ONLY
+  if (g_tx_state_dirty == 0U) {
+    return;
+  }
+
+  if ((now - g_tx_state_dirty_since_tick) < TX_STATE_SAVE_DEFER_MS) {
+    return;
+  }
+
+  if ((g_tx_state_last_save_tick != 0U) && ((now - g_tx_state_last_save_tick) < TX_STATE_SAVE_MIN_INTERVAL_MS)) {
+    return;
+  }
+
+  if (TxState_SaveToFlash() != 0U) {
+    g_tx_state_dirty = 0U;
+    DebugPrint("[TX-STATE] save commit(defer)\r\n");
+  }
+#else
+  (void)now;
+#endif
 }
 
 static void UartCmd_HandleLine(const char *line)
@@ -833,6 +981,11 @@ static void LowPowerDiag_LogWakeFlags(void)
   uint8_t wufi = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUFI) != 0U) ? 1U : 0U;
   uint8_t wuf1 = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF1) != 0U) ? 1U : 0U;
   uint8_t wuf2 = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF2) != 0U) ? 1U : 0U;
+#if defined(PWR_FLAG_SBF)
+  uint8_t sbf  = (__HAL_PWR_GET_FLAG(PWR_FLAG_SBF)  != 0U) ? 1U : 0U;
+#else
+  uint8_t sbf  = 0U;
+#endif
 
   DebugPrint("[LP-WAKE] cnt=");
   DebugPrintDec((uint16_t)(g_lp_wake_cnt & 0xFFFFU));
@@ -842,6 +995,8 @@ static void LowPowerDiag_LogWakeFlags(void)
   DebugPrintDec(wuf1);
   DebugPrint(" WUF2=");
   DebugPrintDec(wuf2);
+  DebugPrint(" SBF=");
+  DebugPrintDec(sbf);
   DebugPrint("\r\n");
 #endif
 }
@@ -874,6 +1029,32 @@ static void EnterTxLowPower(void)
   /* STOP 前暂停 1ms Tick 与 TIM14，避免高频周期唤醒导致电流居高不下 */
   HAL_TIM_Base_Stop_IT(&htim14);
   HAL_SuspendTick();
+#elif (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STANDBY)
+  /* STANDBY 前停掉 1ms Tick 与 TIM14，避免无意义中断活动 */
+  HAL_TIM_Base_Stop_IT(&htim14);
+  HAL_SuspendTick();
+
+  /* 说明：WKUP 引脚在 PWR 视图不支持直接配置上下拉。
+   * 进入 STANDBY 前通过 PWREx 固定关键引脚电平，避免待机期间悬空导致额外静态功耗：
+   * - PA0  (WKUP1)    下拉：保持空闲低电平，仅在外部拉高时唤醒
+   * - PA4  (RF_CSN)   上拉：保证 RF 片选在待机期间维持高电平（模块睡眠态）
+   * - PA5  (RF_SCK)   下拉：避免时钟脚悬空抖动
+   * - PA7  (RF_DATA)  下拉：避免数据脚悬空抖动 */
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_0 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_7);
+  HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_0 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_7);
+  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_4);
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_4);
+  HAL_PWREx_EnablePullUpPullDownConfig();
+
+#if LOWPOWER_DIAG_ENABLE
+  DebugPrint("[LP-PWR-PULL] PA0=PD PA4=PU PA5=PD PA7=PD\r\n");
+#endif
+
+  /* 清理历史唤醒标志，避免“刚进就醒” */
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF);
+
+  /* 使能 WKUP1（PA0），保持“高电平唤醒”与当前按键高有效一致 */
+  HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN1_HIGH);
 #endif
 }
 
@@ -889,7 +1070,12 @@ static void ExitTxLowPower(void)
 #endif
   MX_USART1_UART_Init();
 
-  g_tx_lp_wake_tick = HAL_GetTick();
+  g_tx_lp_wake_tick = HAL_GetTick() + 1U;
+#if LOWPOWER_DIAG_ENABLE
+  DebugPrint("[TX-LP] wake_guard_ms=");
+  DebugPrintDec((uint16_t)TX_LP_WAKE_GUARD_MS);
+  DebugPrint("\r\n");
+#endif
 
 #if LOWPOWER_DIAG_ENABLE
   g_lp_wake_cnt++;
@@ -897,7 +1083,7 @@ static void ExitTxLowPower(void)
 #endif
 
 #if APP_ROLE_TX_ONLY
-  g_tx_lp_wake_tick = HAL_GetTick();
+  g_tx_lp_wake_tick = HAL_GetTick() + 1U;
 #endif
 }
 
@@ -920,6 +1106,23 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+#if APP_ROLE_TX_ONLY
+  /* TX 启动早期先读取唤醒来源，再清理标志，避免证据被提前清掉 */
+  g_boot_lp_wufi = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUFI) != 0U) ? 1U : 0U;
+  g_boot_lp_wuf1 = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF1) != 0U) ? 1U : 0U;
+  g_boot_lp_wuf2 = (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF2) != 0U) ? 1U : 0U;
+#if defined(PWR_FLAG_SBF)
+  g_boot_lp_sbf  = (__HAL_PWR_GET_FLAG(PWR_FLAG_SBF)  != 0U) ? 1U : 0U;
+#else
+  g_boot_lp_sbf  = 0U;
+#endif
+
+  /* 读取后再清标志，防止影响后续进入低功耗 */
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF);
+#if defined(PWR_FLAG_SBF)
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_SBF);
+#endif
+#endif
 
   /* USER CODE END Init */
 
@@ -938,6 +1141,17 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim14);
   DevId_LoadFromFlash();
+
+#if APP_ROLE_TX_ONLY
+  /* STANDBY 唤醒会走重启路径：这里统一拉起“唤醒活跃保护”起点，
+   * 保证 TX_LP_WAKE_GUARD_MS 在主循环首轮就能生效。 */
+  g_tx_lp_wake_tick = HAL_GetTick() + 1U;
+#if LOWPOWER_DIAG_ENABLE
+  DebugPrint("[TX-LP] wake_guard_ms=");
+  DebugPrintDec((uint16_t)TX_LP_WAKE_GUARD_MS);
+  DebugPrint("\r\n");
+#endif
+#endif
   DebugPrint("[FW] " FW_VERSION "\r\n");
 
   DebugPrint("[CFG] role=");
@@ -955,6 +1169,8 @@ int main(void)
   DebugPrint(" lowpower=");
 #if (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STOP)
   DebugPrint("STOP");
+#elif (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STANDBY)
+  DebugPrint("STANDBY");
 #else
   DebugPrint("SLEEP");
 #endif
@@ -970,6 +1186,32 @@ int main(void)
   DebugPrintHex((const uint8_t *)&g_dev_id_paired, 2);
   DebugPrint("\r\n");
   DebugPrint("[CMD] type HELP\r\n");
+
+#if APP_ROLE_TX_ONLY
+  DebugPrint("[BOOT-LP] WUFI=");
+  DebugPrintDec(g_boot_lp_wufi);
+  DebugPrint(" WUF1=");
+  DebugPrintDec(g_boot_lp_wuf1);
+  DebugPrint(" WUF2=");
+  DebugPrintDec(g_boot_lp_wuf2);
+  DebugPrint(" SBF=");
+  DebugPrintDec(g_boot_lp_sbf);
+  DebugPrint("\r\n");
+
+#if TX_STATE_SAVE_COUNTER_LOG_ENABLE
+  DebugPrint("[TX-STATE] save_count=");
+  DebugPrintDec(g_tx_state_save_count);
+  DebugPrint("\r\n");
+#endif
+
+  /* STANDBY 经 WKUP1(中键/PA0) 唤醒：
+   * - 默认补发一次“中键单击”语义，保证“首按即生效”
+   * - 若确认为“持续按住”场景，则在按键扫描阶段再做取消，避免单击+长按双触发 */
+  if (g_boot_lp_wuf1 != 0U) {
+    g_tx_boot_wkup1_inject_m_pending = 1U;
+    DebugPrint("[LP-WKUP] WKUP1 wake detected, pending M-key inject\r\n");
+  }
+#endif
 
 #if APP_ROLE_TX_ONLY
   /* TX 上电自检：LED 快闪 1 次 */
@@ -1388,10 +1630,16 @@ int main(void)
       if ((g_pairing_mode != 0U) || (g_tx_need_send != 0U) || (g_tx_burst_left > 0U)) {
         tx_busy = 1U;
       }
+
+      /* 后台节流保存任务：活跃期间择机提交状态，避免每次按键直接写Flash。 */
+      TxState_SaveWorker(now);
       if ((g_tx_rf_awake != 0U) && ((now - g_tx_last_send_tick) < LINK_TX_BURST_INTERVAL_MS)) {
         tx_busy = 1U;
       }
-      if ((g_tx_lp_wake_tick != 0U) && ((now - g_tx_lp_wake_tick) < TX_LP_WAKE_GUARD_MS)) {
+      if ((g_tx_lp_wake_tick != 0U) && ((now - (g_tx_lp_wake_tick - 1U)) < TX_LP_WAKE_GUARD_MS)) {
+        tx_busy = 1U;
+      }
+      if ((int32_t)(g_tx_post_event_hold_until_tick - now) > 0) {
         tx_busy = 1U;
       }
 
@@ -1420,7 +1668,7 @@ int main(void)
           g_tx_anykey_down_tick = 0U;
           if (g_tx_force_sleep_latched != 0U) {
             g_tx_force_sleep_latched = 0U;
-            g_tx_lp_wake_tick = now;
+            g_tx_lp_wake_tick = now + 1U;
             DebugPrint("[TX-LP] stuck_key_released\r\n");
           }
         }
@@ -1456,6 +1704,14 @@ int main(void)
         HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
         HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
+        /* 进入 STANDBY 前兜底保存：若仍有脏状态，立即提交，避免丢最后一次状态。 */
+        if (g_tx_state_dirty != 0U) {
+          if (TxState_SaveToFlash() != 0U) {
+            g_tx_state_dirty = 0U;
+            DebugPrint("[TX-STATE] save commit(pre-standby)\r\n");
+          }
+        }
+
         if(!g_rf_sleeping) {
           EnterTxLowPower();
         }
@@ -1464,11 +1720,15 @@ int main(void)
         HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_STOP);
         HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
         HAL_PWREx_DisableFlashPowerDown(PWR_FLASHPD_STOP);
+        ExitTxLowPower();
+#elif (TX_LOWPOWER_MODE == TX_LOWPOWER_MODE_STANDBY)
+        HAL_PWR_EnterSTANDBYMode();
+        /* 理论上不会执行到这里；若异常返回，做一次兜底恢复 */
+        ExitTxLowPower();
 #else
         HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-#endif
-
         ExitTxLowPower();
+#endif
       }
     }
 #else
@@ -1608,8 +1868,6 @@ static void MX_TIM14_Init(void)
 
   /* USER CODE END TIM14_Init 1 */
   htim14.Instance = TIM14;
-  /* 24MHz 外部晶振直连（无PLL）下，TIM14 基准修正为 1ms：
-   * 24MHz / (23+1) = 1MHz；1MHz / (999+1) = 1kHz => 1ms tick */
   htim14.Init.Prescaler = 23;
   htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim14.Init.Period = 999;
@@ -1657,7 +1915,7 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX;
+  huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
   huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
@@ -1709,39 +1967,17 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
-#if APP_ROLE_TX_ONLY
-  /* TX 角色：三键输入（上升沿中断 + 下拉） */
+  /*Configure GPIO pin : L_KEY_Pin */
   GPIO_InitStruct.Pin = L_KEY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(L_KEY_GPIO_Port, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = M_KEY_Pin|R_KEY_Pin;
+  /*Configure GPIO pin : R_KEY_Pin */
+  GPIO_InitStruct.Pin = R_KEY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-#else
-  /* RX 角色：复用三键IO作为车辆输入（ACC/远光/喇叭），采用普通输入轮询
-   * - NORMAL 极性：PULLDOWN
-   * - INVERTED 极性：PULLUP */
-  GPIO_InitStruct.Pin = L_KEY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-#else
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-#endif
-  HAL_GPIO_Init(L_KEY_GPIO_Port, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = M_KEY_Pin|R_KEY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-#else
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-#endif
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-#endif
+  HAL_GPIO_Init(R_KEY_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : MOS_L_HI_Pin MOS_L_LO_Pin MOS_R_HI_Pin MOS_R_LO_Pin */
   GPIO_InitStruct.Pin = MOS_L_HI_Pin|MOS_L_LO_Pin|MOS_R_HI_Pin|MOS_R_LO_Pin;
@@ -2359,8 +2595,26 @@ static void TxKeys_Process(uint32_t now, uint8_t tick_1ms)
     changed = 1U;
   }
 
+  /* 低功耗唤醒补偿：若本次为 WKUP1(中键/PA0) 唤醒，则在按键扫描后补发一次中键单击业务。
+   * 折中规则：仅在中键“已释放”时注入；若仍按下，判定为长按场景并取消注入。 */
+  if (g_tx_boot_wkup1_inject_m_pending != 0U) {
+    uint8_t m_now = TxKey_ReadRaw(M_KEY_Pin, M_KEY_GPIO_Port);
+    g_tx_boot_wkup1_inject_m_pending = 0U;
+    if (m_now == 0U) {
+      Tx_HandleSingle(TLIGHT_KEY_M);
+      changed = 1U;
+      DebugPrint("[LP-WKUP] inject key=M trig=single\r\n");
+    } else {
+      DebugPrint("[LP-WKUP] hold_keep, skip inject\r\n");
+    }
+  }
+
   if (changed != 0U) {
     Tx_ScheduleBurst();
+    /* 事件后保持一段活跃窗口，避免 STANDBY 场景下“发完立刻回睡”造成 RX 偶发漏收。 */
+    g_tx_post_event_hold_until_tick = now + TX_POST_EVENT_HOLD_MS;
+    /* 标记状态变更：由后台节流任务统一提交，降低Flash写入频率。 */
+    TxState_MarkDirty(now);
 
     if (g_pairing_mode == 0U) {
       HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
