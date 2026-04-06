@@ -73,7 +73,9 @@
 #define RX_WIRE_ACTIVE_POLARITY_INVERTED  1U
 #define RX_WIRE_ACTIVE_POLARITY           RX_WIRE_ACTIVE_POLARITY_INVERTED 
 
-/* 三线防抖时间（单位ms） */
+/* 三线防抖时间（单位ms）
+ * 当前定标：50ms（用于提升车辆线束抖动/干扰场景下的稳定性）。
+ * 若需更灵敏响应可回调到 20ms，但应重新做台架防抖与误触发验证。 */
 #define RX_WIRE_DEBOUNCE_MS               50U
 
 /* 黄线首次生效门限：首次需“双击”后才放开黄线控制（单位ms） */
@@ -1197,6 +1199,18 @@ int main(void)
 #else
   DebugPrint("RX");
 #endif
+  DebugPrint(" tx_only=");
+#if APP_ROLE_TX_ONLY
+  DebugPrint("1");
+#else
+  DebugPrint("0");
+#endif
+  DebugPrint(" rx_only=");
+#if APP_ROLE_RX_ONLY
+  DebugPrint("1");
+#else
+  DebugPrint("0");
+#endif
   DebugPrint(" link_test=");
 #if APP_RF_LINK_TEST
   DebugPrint("1");
@@ -1211,10 +1225,12 @@ int main(void)
 #else
   DebugPrint("SLEEP");
 #endif
+  DebugPrint(" rx_debounce_ms=");
+  DebugPrintDec((uint16_t)RX_WIRE_DEBOUNCE_MS);
   DebugPrint(" rx_polarity=");
   DebugPrint(RX_WIRE_POLARITY_NAME);
-  DebugPrint(" horn_pending=P4");
-  DebugPrint(" improv=mode5_ab_alt");
+  DebugPrint(" wuf_prio=1>3>4");
+  DebugPrint(" horn_pending=last-wins");
   DebugPrint("\r\n");
 
   DebugPrint("[DEV] local=");
