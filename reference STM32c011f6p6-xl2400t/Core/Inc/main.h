@@ -41,7 +41,8 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.10.47-TxSaveCounterTuning"
+/* 2026-04-06 阶段摘要：已完成三键唤醒重映射与 PWM 迁移，详见 docs/09-阶段成果总结_2026-04-06.md */
+#define FW_VERSION "v2.10.48-ThreeKeyWakeRemap"
 
 /* USER CODE END EC */
 
@@ -60,14 +61,14 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define L_KEY_Pin GPIO_PIN_7
-#define L_KEY_GPIO_Port GPIOB
+#define LED_Pin GPIO_PIN_7
+#define LED_GPIO_Port GPIOB
 #define M_KEY_Pin GPIO_PIN_0
 #define M_KEY_GPIO_Port GPIOA
-#define R_KEY_Pin GPIO_PIN_1
-#define R_KEY_GPIO_Port GPIOA
-#define PWM_GLOBAL_Pin GPIO_PIN_2
+#define PWM_GLOBAL_Pin GPIO_PIN_1
 #define PWM_GLOBAL_GPIO_Port GPIOA
+#define R_KEY_Pin GPIO_PIN_2
+#define R_KEY_GPIO_Port GPIOA
 #define MOS_L_HI_Pin GPIO_PIN_3
 #define MOS_L_HI_GPIO_Port GPIOA
 #define RF_CSN_Pin GPIO_PIN_4
@@ -82,8 +83,8 @@ void Error_Handler(void);
 #define MOS_R_HI_GPIO_Port GPIOA
 #define MOS_R_LO_Pin GPIO_PIN_10
 #define MOS_R_LO_GPIO_Port GPIOA
-#define LED_Pin GPIO_PIN_6
-#define LED_GPIO_Port GPIOB
+#define L_KEY_Pin GPIO_PIN_6
+#define L_KEY_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
