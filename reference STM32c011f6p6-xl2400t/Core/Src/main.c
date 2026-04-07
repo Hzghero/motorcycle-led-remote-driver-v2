@@ -54,8 +54,8 @@
  * - 正常发射端固件：APP_RF_LINK_TEST=0, APP_ROLE_TX_ONLY=1, APP_ROLE_RX_ONLY=0
  * - 正常接收端固件：APP_RF_LINK_TEST=0, APP_ROLE_TX_ONLY=0, APP_ROLE_RX_ONLY=1 */
 #define APP_RF_LINK_TEST            1U  /* 1=开启链路诊断附加打印，0=关闭附加打印（不影响业务主流程） */
-#define APP_ROLE_RX_ONLY            0U  /* 1=接收端固件 */
-#define APP_ROLE_TX_ONLY            1U  /* 1=发射端固件 */
+#define APP_ROLE_RX_ONLY            1U  /* 1=接收端固件 */
+#define APP_ROLE_TX_ONLY            0U  /* 1=发射端固件 */
 
 /* [A-2] RX 三线输入复用映射（仅 RX 角色生效）
  * 说明：同一工程内复用 TX 三键 IO 口给 RX 车辆输入，靠角色宏区分避免冲突。 */
@@ -2057,6 +2057,38 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+#if APP_ROLE_RX_ONLY
+  /* RX 三线输入（白/黄/蓝）在运行态明确配置为输入，并按极性选择内部上下拉：
+   * NORMAL(高有效)  -> 空闲低，使用下拉
+   * INVERTED(低有效)-> 空闲高，使用上拉 */
+  GPIO_InitStruct.Pin = L_KEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+#else
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+#endif
+  HAL_GPIO_Init(L_KEY_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = M_KEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+#else
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+#endif
+  HAL_GPIO_Init(M_KEY_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = R_KEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+#if (RX_WIRE_ACTIVE_POLARITY == RX_WIRE_ACTIVE_POLARITY_INVERTED)
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+#else
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+#endif
+  HAL_GPIO_Init(R_KEY_GPIO_Port, &GPIO_InitStruct);
+#endif
+
   HAL_NVIC_SetPriority(EXTI0_1_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(EXTI0_1_IRQn);
   HAL_NVIC_SetPriority(EXTI4_15_IRQn, 1, 0);

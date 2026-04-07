@@ -4,6 +4,8 @@
 
 | 版本号 | 日期 | 修改要点 | 关联文件 |
 | --- | --- | --- | --- |
+| v2.10.48-RXWirePullByPolarity | 2026-04-07 | 修复接收端三线输入在重映射后的运行态 GPIO 配置缺口：仅在 RX 角色下，按 `RX_WIRE_ACTIVE_POLARITY` 对白/黄/蓝三线（PB6/PA0/PA2）显式配置输入上下拉（NORMAL→下拉，INVERTED→上拉），避免 Cube 重配后 NOPULL 导致的悬空误判；不改业务状态机，便于独立回滚。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`CHANGELOG_INDEX.md` |
+| v2.10.48-TodaySummary-DocSync | 2026-04-06 | 补充当日收尾总结：归档今日新增的文档对齐项（防抖参数50ms、多WUF优先级、pending last-wins、提交粒度规范）与低风险日志增强结论，形成可直接交接的日终记录。 | `docs/09-阶段成果总结_2026-04-06.md`、`CHANGELOG_INDEX.md` |
 | v2.10.48-DocRuleSync-50msWufPending | 2026-04-06 | 仅文档规则固化：将 RX 三线防抖参数统一到当前代码值 `RX_WIRE_DEBOUNCE_MS=50ms`；补充 TX 多 WUF 同时置位处理优先级（`WUF1>WUF3>WUF4`）；固化 RX 在 HORN 期间 pending 的“最后命令生效（last-wins）”策略；新增 Git 提交粒度与产物管理规范条目。 | `docs/01-功能说明书.md`、`CHANGELOG_INDEX.md` |
 | v2.10.48-今日收官摘要 | 2026-04-06 | 今日阶段性收官：完成三键 STANDBY 唤醒（WKUP1/3/4）与引脚重映射（L=PB6、M=PA0、R=PA2、LED=PB7、PWM_GLOBAL=PA1/TIM1_CH2），补齐唤醒补偿与长按过滤链路；同时同步更新《01-功能说明书》、新增实施与阶段总结文档，为下一步 Cube 细调与回归留出清晰基线。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`reference STM32c011f6p6-xl2400t/STM32c011f6p6-xl2400t.ioc`、`docs/01-功能说明书.md`、`docs/08-STANDBY三键唤醒与引脚重映射实施说明_2026-04-05.md`、`docs/09-阶段成果总结_2026-04-06.md`、`CHANGELOG_INDEX.md` |
 | v2.10.48-ThreeKeyWakeRemap | 2026-04-06 | 完成三键唤醒重映射落地：适配新引脚（L=PB6/WKUP3、M=PA0/WKUP1、R=PA2/WKUP4），将 PWM_GLOBAL 切换到 PA1/TIM1_CH2，并在 STANDBY 前手动配置 PA2/PB6 待机下拉（补偿 Cube 无法直接配置上下拉）；唤醒补偿逻辑扩展为 WUF1/WUF3/WUF4 对应 L/M/R 单击注入并保留长按过滤。 | `reference STM32c011f6p6-xl2400t/Core/Src/main.c`、`reference STM32c011f6p6-xl2400t/Core/Inc/main.h`、`reference STM32c011f6p6-xl2400t/STM32c011f6p6-xl2400t.ioc`、`CHANGELOG_INDEX.md` |
