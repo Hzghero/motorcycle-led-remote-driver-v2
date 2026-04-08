@@ -42,7 +42,7 @@ extern "C" {
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
 /* 2026-04-06 阶段摘要：已完成三键唤醒重映射与 PWM 迁移，详见 docs/09-阶段成果总结_2026-04-06.md */
-#define FW_VERSION "v2.10.48-ThreeKeyWakeRemap"
+#define FW_VERSION "v2.10.57-WKUP4FastEdgeLatch"
 
 /* USER CODE END EC */
 

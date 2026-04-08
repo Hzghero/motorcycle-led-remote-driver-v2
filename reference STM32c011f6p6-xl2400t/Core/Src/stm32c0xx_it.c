@@ -158,6 +158,10 @@ void TIM14_IRQHandler(void)
 void EXTI0_1_IRQHandler(void)
 {
   HAL_GPIO_EXTI_IRQHandler(M_KEY_Pin);
+}
+
+void EXTI2_3_IRQHandler(void)
+{
   HAL_GPIO_EXTI_IRQHandler(R_KEY_Pin);
 }
 
